@@ -53,7 +53,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
             label: '台灣賓果',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.sparkles),
+            icon: Icon(Icons.auto_awesome),
             label: '統合預測',
           ),
         ],
