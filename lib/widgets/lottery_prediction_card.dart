@@ -7,10 +7,8 @@ import '../services/bingo_service.dart';
 const _kBg      = Color(0xFF0A1020);
 const _kBgCard  = Color(0xFF141E35);
 const _kGold    = Color(0xFFFFD700);
-const _kRed     = Color(0xFFB71C1C);
 const _kRedL    = Color(0xFFD32F2F);
 const _kBlue    = Color(0xFF0D47A1);
-const _kPurple  = Color(0xFF4A148C);
 const _kGreen   = Color(0xFF1B5E20);
 
 // ══════════════════════════════════════════════════════════════
@@ -106,7 +104,6 @@ class Lottery539PredictionCard extends StatelessWidget {
     final cold   = _coldTop10(records);
     final digits = _digitDist(records);
     final trends = _trends(records, analysis);
-    final combos = analysis?.recommendedCombos ?? const [];
     final top5   = data.results.map((r) => r.number).toList();
     final nextDate = taiwanNow.add(const Duration(days: 1));
     final todayStr = '${taiwanNow.month}/${taiwanNow.day.toString().padLeft(2,'0')}';
@@ -126,8 +123,6 @@ class Lottery539PredictionCard extends StatelessWidget {
           _buildHeader(todayStr, nextStr, latestDate),
           _buildDataSection(records, hot, cold, digits),
           _buildTrendBar(trends),
-          const SizedBox(height: 12),
-          _buildCombos(combos),
           const SizedBox(height: 12),
           _buildTop5Section(top5),
           _buildTips(),
@@ -379,59 +374,6 @@ class Lottery539PredictionCard extends StatelessWidget {
     );
   }
 
-  // ── Combos ──────────────────────────────────────────────────────
-
-  Widget _buildCombos(List<FiveStarCombo> combos) {
-    const configs = [
-      (label: '主力推薦（首選）', icon: '👑', desc: '熱號集中＋連號機率高＋尾數完美', color: _kRed),
-      (label: '備用強化組（防爆）', icon: '🛡️', desc: '冷熱搭配＋區間平衡＋防冷門爆', color: _kBlue),
-      (label: '極限壓議（只留最強）', icon: '⚡', desc: '核心熱號精準打擊，命中率集中', color: _kPurple),
-    ];
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      child: Column(
-        children: List.generate(3, (i) {
-          final combo = i < combos.length ? combos[i] : null;
-          final cfg = configs[i];
-          final numbers = combo?.numbers ?? const [];
-          return Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [cfg.color.withAlpha(220), cfg.color.withAlpha(120)],
-                begin: Alignment.topLeft, end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white24),
-            ),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                Text(cfg.icon, style: const TextStyle(fontSize: 14)),
-                const SizedBox(width: 6),
-                Text(cfg.label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 13)),
-              ]),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: numbers.isEmpty
-                    ? [const Text('---', style: TextStyle(color: Colors.white54))]
-                    : numbers.map((n) => _NumBall(n: n)).toList(),
-              ),
-              if (combo != null) ...[
-                const SizedBox(height: 6),
-                Text('★ ${combo.rationale}',
-                    style: TextStyle(color: Colors.white.withAlpha(180), fontSize: 10),
-                    overflow: TextOverflow.ellipsis),
-              ],
-            ]),
-          );
-        }),
-      ),
-    );
-  }
-
   // ── 胖胖最強5碼 ─────────────────────────────────────────────────
 
   Widget _buildTop5Section(List<int> top5) {
@@ -472,7 +414,7 @@ class Lottery539PredictionCard extends StatelessWidget {
   }
 
   Widget _buildTips() {
-    const tips = ['這5碼可以直接全壓', '或拆成：3碼主攻 + 2碼機動', '想更穩 → 主力 + 備用混搭更佳'];
+    const tips = ['這5碼可以直接全壓', '或拆成：3碼主攻 + 2碼機動', '想更穩 → 搭配熱力圖冷號回補'];
     return Container(
       margin: const EdgeInsets.fromLTRB(10, 10, 10, 0),
       padding: const EdgeInsets.all(10),
@@ -560,35 +502,6 @@ class BingoPredictionCard extends StatelessWidget {
     return items.take(4).toList();
   }
 
-  List<List<int>> _threeGroups() {
-    final hot  = pred.hotNumbers.take(6).toList();
-    final cold = pred.coldNumbers.take(3).toList();
-    final rec  = pred.recommended;
-
-    // 熱號強攻
-    final g1 = rec.take(6).toList();
-
-    // 冷熱平衡
-    final g2set = <int>{...hot.take(3), ...cold};
-    for (var i = 0; g2set.length < 6 && i < rec.length; i++) {
-      g2set.add(rec[i]);
-    }
-    final g2 = g2set.take(6).toList();
-
-    // 連帶押注
-    final g3set = <int>{...pred.carryOverNumbers.take(4)};
-    for (final p in pred.topPairs.take(5)) {
-      g3set.add(p.a);
-      g3set.add(p.b);
-      if (g3set.length >= 6) break;
-    }
-    for (var i = 0; g3set.length < 6 && i < rec.length; i++) {
-      g3set.add(rec[i]);
-    }
-
-    return [g1, g2, g3set.take(6).toList()];
-  }
-
   @override
   Widget build(BuildContext context) {
     if (records.isEmpty) return const SizedBox.shrink();
@@ -596,7 +509,6 @@ class BingoPredictionCard extends StatelessWidget {
     final cold   = _coldTop10();
     final dist   = _sectionDist();
     final trends = _trends();
-    final groups = _threeGroups();
     final topRec = pred.recommended.take(6).toList();
     final latest = records.first;
 
@@ -613,8 +525,6 @@ class BingoPredictionCard extends StatelessWidget {
           _buildBingoHeader(latest),
           _buildBingoDataSection(records, hot, cold, dist),
           _buildBingoTrendBar(trends),
-          const SizedBox(height: 12),
-          _buildBingoGroups(groups),
           const SizedBox(height: 12),
           _buildBingoTopSection(topRec),
           _buildBingoTips(),
@@ -861,51 +771,6 @@ class BingoPredictionCard extends StatelessWidget {
     );
   }
 
-  Widget _buildBingoGroups(List<List<int>> groups) {
-    const configs = [
-      (label: '熱號強攻組', icon: '🔥', desc: '高頻熱號集中火力', color: _kRed),
-      (label: '冷熱平衡組（防爆）', icon: '🛡️', desc: '冷熱搭配，全面覆蓋', color: _kBlue),
-      (label: '連帶押注組', icon: '🔗', desc: '歷史高頻連帶號碼', color: _kPurple),
-    ];
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      child: Column(
-        children: List.generate(3, (i) {
-          final numbers = i < groups.length ? groups[i] : <int>[];
-          final cfg = configs[i];
-          return Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [cfg.color.withAlpha(220), cfg.color.withAlpha(120)],
-                begin: Alignment.topLeft, end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white24),
-            ),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                Text(cfg.icon, style: const TextStyle(fontSize: 14)),
-                const SizedBox(width: 6),
-                Text(cfg.label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 13)),
-              ]),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: numbers.isEmpty
-                    ? [const Text('---', style: TextStyle(color: Colors.white54))]
-                    : numbers.map((n) => _NumBall(n: n)).toList(),
-              ),
-              const SizedBox(height: 6),
-              Text('★ ${cfg.desc}', style: TextStyle(color: Colors.white.withAlpha(180), fontSize: 10)),
-            ]),
-          );
-        }),
-      ),
-    );
-  }
-
   Widget _buildBingoTopSection(List<int> topRec) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 10),
@@ -976,29 +841,6 @@ class _NS {
   final int n;
   final int count;
   const _NS(this.n, this.count);
-}
-
-class _NumBall extends StatelessWidget {
-  const _NumBall({required this.n});
-  final int n;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 42, height: 42,
-      decoration: const BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: LinearGradient(
-          colors: [Color(0xFF8B0000), Color(0xFFB71C1C)],
-          begin: Alignment.topLeft, end: Alignment.bottomRight,
-        ),
-        boxShadow: [BoxShadow(color: Color(0x66FF0000), blurRadius: 6, spreadRadius: 1)],
-      ),
-      alignment: Alignment.center,
-      child: Text(n.toString().padLeft(2,'0'),
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 14)),
-    );
-  }
 }
 
 class _NumBallGold extends StatelessWidget {

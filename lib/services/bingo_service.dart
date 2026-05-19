@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ════════════════════════════════════════════════════════════════
 //  資料模型
@@ -193,7 +195,8 @@ class BacktestResult {
 class BingoService {
   static const _primaryBase = 'https://bingo.kuaishou1688.com';
   static const _fallbackUrl = 'https://lotto.auzo.tw/bingobingo.php';
-  static const _fetchCount = 200; // 分析用局數（越多轉移概率越準）
+  static const _fetchCount = 120; // 分析用局數（足夠轉移矩陣且加載快）
+  static const _prefsKey = 'bingo_records_cache_v2';
 
   List<BingoRecord> _cache = [];
   DateTime? _lastFetch;
@@ -206,36 +209,81 @@ class BingoService {
         now.difference(_lastFetch!).inMinutes < 5;
     if (!forceRefresh && valid && _cache.isNotEmpty) return _cache;
 
+    // 首次冷啟動：從 SharedPreferences 即時讀出上次快取，馬上回傳
+    if (_cache.isEmpty) {
+      final persisted = await _loadPersistedCache();
+      if (persisted.isNotEmpty) {
+        _cache = persisted;
+        debugPrint('📦 Bingo 離線快取: ${_cache.length} 筆');
+        // 背景刷新，不阻塞 UI
+        _fetchAndPersist();
+        return _cache;
+      }
+    }
+
+    return _fetchAndPersist();
+  }
+
+  Future<List<BingoRecord>> _fetchAndPersist() async {
+    final now = DateTime.now();
     final primary = await _fetchFromKuaishou(_fetchCount);
-    // 主來源通常較快：若已接近目標局數，直接回傳避免額外等待備援來源
-    if (primary.length >= 95) {
+    if (primary.length >= 80) {
       _cache = primary.take(_fetchCount).toList();
       _lastFetch = now;
+      _persistCache(_cache);
       return _cache;
     }
 
-    // 主來源不足時才抓備援，補齊到 100 局
+    // 主來源不足時才抓備援
     final fallback = await _fetchFromAuzo();
+    final merged = <int, BingoRecord>{};
+    for (final r in primary) { merged[r.drawNo] = r; }
+    for (final r in fallback) { merged.putIfAbsent(r.drawNo, () => r); }
 
-    final mergedByDrawNo = <int, BingoRecord>{};
-    for (final r in primary) {
-      mergedByDrawNo[r.drawNo] = r;
-    }
-    for (final r in fallback) {
-      mergedByDrawNo.putIfAbsent(r.drawNo, () => r);
-    }
-
-    final merged = mergedByDrawNo.values.toList()
-      ..sort((a, b) => b.drawNo.compareTo(a.drawNo));
-    final result = merged.take(_fetchCount).toList();
+    final result = (merged.values.toList()
+          ..sort((a, b) => b.drawNo.compareTo(a.drawNo)))
+        .take(_fetchCount)
+        .toList();
 
     if (result.isNotEmpty) {
       _cache = result;
       _lastFetch = now;
-      return result;
+      _persistCache(_cache);
+      return _cache;
     }
-
     return _cache;
+  }
+
+  Future<void> _persistCache(List<BingoRecord> records) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final json = records.map((r) => {
+        'drawNo': r.drawNo, 'drawDate': r.drawDate,
+        'drawTime': r.drawTime, 'numbers': r.numbers, 'superNum': r.superNum,
+      }).toList();
+      await prefs.setString(_prefsKey, jsonEncode(json));
+    } catch (_) {}
+  }
+
+  Future<List<BingoRecord>> _loadPersistedCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final str = prefs.getString(_prefsKey);
+      if (str == null) return [];
+      final list = jsonDecode(str) as List<dynamic>;
+      return list.map((m) {
+        final item = m as Map<String, dynamic>;
+        return BingoRecord(
+          drawNo: (item['drawNo'] as num).toInt(),
+          drawDate: item['drawDate'] as String? ?? '',
+          drawTime: item['drawTime'] as String? ?? '',
+          numbers: (item['numbers'] as List<dynamic>).map((n) => (n as num).toInt()).toList(),
+          superNum: item['superNum'] as String? ?? '',
+        );
+      }).toList();
+    } catch (_) {
+      return [];
+    }
   }
 
   // ── 公開：分析統計 ────────────────────────────────────────────
@@ -890,7 +938,7 @@ class BingoService {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'count': count}),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 6));
 
       if (resp.statusCode != 200) return [];
       final json =

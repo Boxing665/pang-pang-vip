@@ -42,6 +42,11 @@ class _LatestMatchesScreenState extends State<LatestMatchesScreen>
   // 預測快取：match.id → MatchPrediction
   final Map<String, MatchPrediction> _predictionCache = {};
 
+  // 即時更新：最後更新時間 & 是否正在靜默刷新
+  DateTime? _lastRefreshTime;
+  // ignore: prefer_final_fields
+  bool _isSilentRefreshing = false;
+
   // 排行榜
   bool _showStandings = false;
   String _standingsLeague = '英超';
@@ -81,14 +86,14 @@ class _LatestMatchesScreenState extends State<LatestMatchesScreen>
 
   void _startLiveTimer() {
     _liveTimer?.cancel();
-    // Use 20s interval when live baseball exists (SBO changes fast), else 60s
+    // 有進行中的美職棒時用 20s（SBO 跑分快）；其餘固定 30s，確保賭盤賠率即時更新
     final hasLiveBall = _cachedMatches.any(
         (m) => m.status == MatchStatus.live && m.sport == SportType.baseball);
-    final interval = hasLiveBall ? 20 : 60;
+    final interval = hasLiveBall ? 20 : 30;
     _liveTimer = Timer.periodic(Duration(seconds: interval), (_) {
       if (!mounted) return;
-      final hasLive = _cachedMatches.any((m) => m.status == MatchStatus.live);
-      if (hasLive) _loadMatches(silent: true);
+      // 無論是否有進行中比賽，都靜默刷新以取得最新賭盤賠率
+      _loadMatches(silent: true);
     });
   }
 
@@ -96,22 +101,58 @@ class _LatestMatchesScreenState extends State<LatestMatchesScreen>
     if (!silent) {
       _matchesFuture = _sportsService.getMatchesForDays(days: 5).then((matches) {
         _cachedMatches = matches;
+        _lastRefreshTime = DateTime.now();
         _startLiveTimer();
         _autoSaveSportPredictions(matches);
-        // async，不阻塞 FutureBuilder 回傳；await 在 _computePredictions 內部
         _computePredictions(matches);
         return matches;
       });
       if (mounted) setState(() {});
     } else {
+      if (_isSilentRefreshing) return; // 避免並發刷新
+      setState(() => _isSilentRefreshing = true);
       _sportsService.getMatchesForDays(days: 5).then((matches) {
         if (!mounted) return;
-        setState(() => _cachedMatches = matches);
+        // 當賠率有變動時，清除預測快取以便使用最新盤口重算
+        final oddsChanged = _oddsChanged(_cachedMatches, matches);
+        if (oddsChanged) {
+          _predictionCache.clear();
+          PangPangSportsService.clearPredictionCache();
+        }
+        setState(() {
+          _cachedMatches = matches;
+          _lastRefreshTime = DateTime.now();
+          _isSilentRefreshing = false;
+        });
         _matchesFuture = Future.value(matches);
         _autoSaveSportPredictions(matches);
         _computePredictions(matches);
+      }).catchError((_) {
+        if (mounted) setState(() => _isSilentRefreshing = false);
       });
     }
+  }
+
+  /// 比較前後兩份賽程中，是否有任何賭盤賠率發生變化
+  bool _oddsChanged(List<MatchFixture> oldList, List<MatchFixture> newList) {
+    if (oldList.length != newList.length) return true;
+    for (int i = 0; i < oldList.length; i++) {
+      final o = oldList[i].odds;
+      final n = newList[i].odds;
+      if ((o.homeWin - n.homeWin).abs() > 0.01 ||
+          (o.awayWin - n.awayWin).abs() > 0.01 ||
+          (o.overLine - n.overLine).abs() > 0.05) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  String _formatRefreshTime(DateTime t) {
+    final h = t.hour.toString().padLeft(2, '0');
+    final m = t.minute.toString().padLeft(2, '0');
+    final s = t.second.toString().padLeft(2, '0');
+    return '$h:$m:$s';
   }
 
   Future<void> _computePredictions(List<MatchFixture> matches) async {
@@ -314,6 +355,38 @@ class _LatestMatchesScreenState extends State<LatestMatchesScreen>
     return AppShell(
       title: '所有比賽',
       actions: [
+        // 即時更新狀態：顯示最後刷新時間 + 脈衝圓點
+        if (_lastRefreshTime != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AnimatedBuilder(
+                  animation: _pulseAnim,
+                  builder: (_, child) => Container(
+                    width: 7,
+                    height: 7,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: (_isSilentRefreshing
+                              ? Colors.orange
+                              : Colors.greenAccent)
+                          .withValues(alpha: _pulseAnim.value),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  _formatRefreshTime(_lastRefreshTime!),
+                  style: const TextStyle(
+                      fontSize: 10,
+                      color: Colors.white54,
+                      fontFeatures: [FontFeature.tabularFigures()]),
+                ),
+              ],
+            ),
+          ),
         IconButton(
           icon: const Icon(Icons.refresh_rounded),
           onPressed: _loadMatches,
@@ -1396,7 +1469,7 @@ class _MatchTile extends StatelessWidget {
                 ),
             ],
             const SizedBox(height: 12),
-            // 賠率
+            // 賠率 + 來源標籤
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
@@ -1410,6 +1483,19 @@ class _MatchTile extends StatelessWidget {
                 _OddsChip(label: '客勝', value: match.odds.awayWin),
               ],
             ),
+            if (match.odds.isFromBookmaker &&
+                match.odds.bookmakerName.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Center(
+                child: Text(
+                  '📡 ${match.odds.bookmakerName} 即時賠率',
+                  style: TextStyle(
+                      color: Colors.greenAccent.withValues(alpha: 0.7),
+                      fontSize: 9,
+                      letterSpacing: 0.3),
+                ),
+              ),
+            ],
             if (prediction != null && match.status != MatchStatus.completed) ...[
               const SizedBox(height: 8),
               _PredictionBadge(match: match, prediction: prediction!),
