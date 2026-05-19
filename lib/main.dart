@@ -219,7 +219,8 @@ class _PasswordLockScreenState extends State<PasswordLockScreen> {
     }
     
     // 🔑 解鎖成功後，直接進入你原本的免責聲明主畫面
-    return DisclaimerWrapper();
+    return const Scaffold(body: Center(child: Text("解鎖成功！", style: TextStyle(color: Colors.white))));
+
  
   }
 }
