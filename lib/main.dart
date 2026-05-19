@@ -225,11 +225,14 @@ class _PasswordLockScreenState extends State<PasswordLockScreen> {
     }
     
     // 🔑 解鎖成功後，直接進入你原本的免責聲明主畫面
-// 👈 點了免責聲明的同意後，不要直接進系統，改成切換到密碼鎖！
+// // 👈 把這 4 行按 Backspace 鍵完全刪除乾淨！
+// ➜ 點了免責聲明的同意後，不要直接進系統，改成切換到密碼鎖！
 Navigator.pushReplacement(
   context,
   MaterialPageRoute(builder: (context) => const PasswordLockScreen()),
 );
+// 🔑 密碼打對後，進入真正的體育主導航畫面
+return const MainNavigationScreen();
 
 
  
