@@ -158,7 +158,7 @@ class _PasswordLockScreenState extends State<PasswordLockScreen> {
   bool isAuthorized = false;
   final TextEditingController _passwordController = TextEditingController();
   
-  // 🎯 在這裡設定你想要的密碼，目前預設是 Boxeo@881219@Boxing24614360
+  // 🔒 密碼已經幫你改成專屬的這一長串了！
   final String correctPassword = "Boxeo@881219@Boxing24614360"; 
 
   @override
@@ -171,7 +171,7 @@ class _PasswordLockScreenState extends State<PasswordLockScreen> {
             padding: const EdgeInsets.all(32),
             constraints: const BoxConstraints(maxWidth: 360),
             child: Column(
-              mainAxisAlignment: MainCDATAAlignment = MainAxisAlignment.center,
+              mainAxisAlignment: MainAxisAlignment.center,
               mainAxisSize: MainAxisSize.min,
               children: [
                 const Icon(Icons.security, size: 70, color: Colors.orangeAccent),
@@ -183,7 +183,7 @@ class _PasswordLockScreenState extends State<PasswordLockScreen> {
                 const SizedBox(height: 30),
                 TextField(
                   controller: _passwordController,
-                  obscureText: true,
+                  obscureText: true, // 自動把輸入的密碼遮起來
                   style: const TextStyle(color: Colors.white),
                   decoration: const InputDecoration(
                     labelText: "請輸入存取密碼",
@@ -218,7 +218,7 @@ class _PasswordLockScreenState extends State<PasswordLockScreen> {
       );
     }
     
-    // 🔑 解鎖成功後，直接進入你原本包裝好的免責聲明主畫面
+    // 🔑 解鎖成功後，直接進入你原本的免責聲明主畫面
     return const DisclaimerWrapper(); 
   }
 }
