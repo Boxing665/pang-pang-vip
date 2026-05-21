@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/lottery_model.dart';
@@ -8,12 +8,18 @@ import '../models/lottery_fallback_data.dart';
 
 /// 樂透數據抓取服務（Dart port of Swift LotteryFetcher）
 ///
-/// 從 pilio.idv.tw 抓取 539、大樂透、威力彩歷史開獎記錄
-/// 
-/// ⚠️ Web 平台限制：pilio.idv.tw 不支持 CORS，Web 版本使用免費 CORS 代理
+/// 539 開獎資料來源（優先順序）：
+///   1. GitHub raw JSON（由 GitHub Actions 每日 21:15 台灣時間自動更新）
+///   2. 本機 SharedPreferences 快取
+///   3. 內嵌 fallback 歷史資料
+///
+/// 其他彩券（大樂透/威力彩）仍從 pilio.idv.tw 抓取
 class LotteryService {
-  // 原始 URL
-  static const _url539Origin    = 'https://www.pilio.idv.tw/lto539/list.asp';
+  // 539 GitHub Actions 每日更新的 JSON 檔（有 CORS，無需 proxy）
+  static const _url539Github =
+      'https://raw.githubusercontent.com/Boxing665/pang-pang-sport/main/data/lotto539.json';
+
+  // 原始 URL（大樂透/威力彩）
   static const _urlLottoOrigin  = 'https://www.pilio.idv.tw/ltobig/list.asp';
   static const _urlPowerOrigin  = 'https://www.pilio.idv.tw/lto/list.asp';
   static const _urlDragOrigin   = 'https://www.pilio.idv.tw/lto539/sql23.asp';
@@ -70,6 +76,35 @@ class LotteryService {
     return null;
   }
 
+  /// 從 GitHub raw JSON 抓取 539 開獎記錄（每日 Actions 自動更新，支援 CORS）
+  Future<List<DrawRecord>> _fetch539FromGithub() async {
+    try {
+      final resp = await http.get(
+        Uri.parse(_url539Github),
+        headers: {'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 10));
+      if (resp.statusCode != 200) return [];
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      final list = (data['records'] as List<dynamic>?) ?? [];
+      final records = list.map((e) {
+        final m = e as Map<String, dynamic>;
+        return DrawRecord(
+          date: m['date'] as String,
+          numbers: (m['numbers'] as List<dynamic>).map((n) => n as int).toList(),
+        );
+      }).toList();
+      if (records.isNotEmpty) {
+        unawaited(_saveCache539(records)); // 同步寫入本機快取
+        final updated = data['updated'] as String? ?? '';
+        debugPrint('✅ 539 GitHub raw: ${records.length} 筆 ($updated)');
+      }
+      return records;
+    } catch (e) {
+      debugPrint('⚠️ 539 GitHub raw 失敗: $e');
+      return [];
+    }
+  }
+
   /// 同時抓取三種彩券的歷史資料並執行分析
   Future<LotteryFetchResult> fetchAndAnalyze({
     List<int> redHints = const [],
@@ -82,13 +117,14 @@ class LotteryService {
     _errorMessage = '';
 
     final pages = [1, 2, 3, 4, 5];
-    // 同時抓彩券頁面與拖牌頁面
-    final results = await Future.wait([
-      Future.wait(pages.map((p) => _fetchWithProxy('$_url539Origin?indexpage=$p'))),
+    // 同時抓取（分開型別避免 Future.wait 泛型衝突）
+    final github539Future = _fetch539FromGithub();
+    final htmlResults = await Future.wait([
       Future.wait(pages.map((p) => _fetchWithProxy('$_urlLottoOrigin?indexpage=$p'))),
       Future.wait(pages.map((p) => _fetchWithProxy('$_urlPowerOrigin?indexpage=$p'))),
       Future.wait([_fetchWithProxy(_urlDragOrigin)]),
     ]);
+    var records539 = await github539Future;
 
     List<DrawRecord> mergePages(List<String?> htmlPages, int maxNum) {
       final all = <DrawRecord>[];
@@ -102,16 +138,14 @@ class LotteryService {
       return all;
     }
 
-    var records539   = mergePages(results[0], 39);
-    final recordsLotto = mergePages(results[1], 49);
-    final recordsPower = mergePages(results[2], 38);
-    final dragPatterns = _parseDragPatterns(results[3].first);
+    final recordsLotto = mergePages(htmlResults[0], 49);
+    final recordsPower = mergePages(htmlResults[1], 38);
+    final dragPatterns = _parseDragPatterns(htmlResults[2].first);
 
     if (records539.isNotEmpty) {
-      // 成功抓到新資料 → 存入本機快取供下次離線使用
-      unawaited(_saveCache539(records539));
+      // GitHub JSON 成功，不需額外處理
     } else {
-      // 先嘗試本機快取（包含上次成功抓取的最新記錄）
+      // GitHub 失敗 → 嘗試本機快取
       final cached = await loadCached539();
       if (cached.isNotEmpty) {
         records539 = cached;
