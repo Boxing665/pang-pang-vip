@@ -86,25 +86,83 @@ class SelfLearningService {
       final league  = log.details['league']  as String?;
       if (matchId == null || league == null) continue;
 
-      final actual = await _fetchESPNResult(matchId, league);
-      if (actual == null) continue;
+      final result = await _fetchESPNScores(matchId, league);
+      if (result == null) continue;
 
       final predicted = log.details['winner'] as String?;
       if (predicted == null || predicted.isEmpty) continue;
 
-      final correct = actual == predicted;
-      log.actualResult = actual;
-      log.outcome      = correct
-          ? PredictionOutcome.correct
-          : PredictionOutcome.incorrect;
+      final correct = result.winner == predicted;
+      log.actualResult = result.winner;
+      log.outcome      = correct ? PredictionOutcome.correct : PredictionOutcome.incorrect;
       log.accuracyScore = correct ? 1.0 : 0.0;
       await logSvc.save(log);
       await _autoLearnFromLog(log);
+
+      // ── 大小分追蹤 ────────────────────────────────────────────
+      final sport    = log.details['sport'] as String? ?? league;
+      final overLine = (log.details['overLine'] as num?)?.toDouble() ?? 0.0;
+      if (overLine > 0) {
+        final predH     = (log.details['predictedHomeScore'] as num?)?.toDouble() ?? 0.0;
+        final predA     = (log.details['predictedAwayScore'] as num?)?.toDouble() ?? 0.0;
+        final predOver  = (predH + predA) > overLine;
+        final actualOver = (result.homeScore + result.awayScore) > overLine;
+        await recordOUPrediction(sport, predOver, actualOver);
+      }
+
+      // ── 放水/輪替偵測 ─────────────────────────────────────────
+      // 若強隊（勝率預測>60%）輸分差過大(>15分)，記錄可能輪替場次
+      final predWinProb = (log.details['mcHomeWinPct'] as num?)?.toDouble() ?? 0.5;
+      final homeFav     = predWinProb > 0.60;
+      final actualDiff  = (result.homeScore - result.awayScore).abs();
+      final predDiff    = ((log.details['predictedHomeScore'] as num?)?.toDouble() ?? 0) -
+                          ((log.details['predictedAwayScore'] as num?)?.toDouble() ?? 0);
+      // 預測強隊贏但實際輸，且分差超過預測值 15 分以上 → 可能放水/輪替
+      if (homeFav && result.winner != 'home' && actualDiff + predDiff.abs() > 15) {
+        await _recordRestGame(league, matchId);
+      }
     }
   }
 
-  /// 向 ESPN 查詢已完賽事的勝負（'home'|'away'|'draw'|null）
-  static Future<String?> _fetchESPNResult(
+  static const _restGamesKey = 'sl_rest_games_v1';
+
+  static Future<void> _recordRestGame(String league, String matchId) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw   = prefs.getString(_restGamesKey);
+    final data  = raw != null
+        ? Map<String, dynamic>.from(jsonDecode(raw) as Map)
+        : <String, dynamic>{};
+    final List<String> ids = ((data[league] as List?)?.cast<String>()) ?? [];
+    if (!ids.contains(matchId)) {
+      ids.add(matchId);
+      if (ids.length > 50) ids.removeAt(0); // 只保留近50筆
+      data[league] = ids;
+      await prefs.setString(_restGamesKey, jsonEncode(data));
+    }
+  }
+
+  /// 取得各聯賽近期可能放水/輪替場次數量（供 UI 顯示）
+  static Future<Map<String, int>> getRestGameCounts() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw   = prefs.getString(_restGamesKey);
+    if (raw == null) return {};
+    final data  = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+    return data.map((k, v) => MapEntry(k, ((v as List?)?.length) ?? 0));
+  }
+
+  /// 取得大小分偏差乘數（供 predictScore 套用）
+  /// 若過去 O/U 命中率低，代表 lambda 系統性偏高/低，適度修正
+  static Future<double> getOUBiasMultiplier(String sport) async {
+    final acc = await getOUAccuracy(sport);
+    if (acc == null) return 1.0;
+    if (acc < 0.38) return 0.93; // 大幅低估/高估 → 縮減
+    if (acc < 0.48) return 0.97;
+    if (acc > 0.72) return 1.03; // 準確率高 → 輕微加成信心
+    return 1.0;
+  }
+
+  /// 向 ESPN 查詢已完賽事的勝負 + 比分
+  static Future<({String winner, double homeScore, double awayScore})?> _fetchESPNScores(
       String eventId, String league) async {
     final path = _leagueToPath[league];
     if (path == null) return null;
@@ -118,35 +176,27 @@ class SelfLearningService {
           .timeout(const Duration(seconds: 8));
       if (resp.statusCode != 200) return null;
 
-      final data  = jsonDecode(resp.body) as Map<String, dynamic>;
+      final data     = jsonDecode(resp.body) as Map<String, dynamic>;
       final compList = data['header']?['competitions'] as List?;
-      final comps = (compList != null && compList.isNotEmpty
-              ? compList.first
-              : null)
+      final comps    = (compList != null && compList.isNotEmpty ? compList.first : null)
           as Map<String, dynamic>?;
       if (comps == null) return null;
 
       final finished =
-          (comps['status']?['type'] as Map<String, dynamic>?)?['completed']
-              as bool? ??
-          false;
+          (comps['status']?['type'] as Map<String, dynamic>?)?['completed'] as bool? ?? false;
       if (!finished) return null;
 
       double? homeScore, awayScore;
       for (final c in (comps['competitors'] as List? ?? [])) {
-        final comp    = c as Map<String, dynamic>;
-        final isHome  = (comp['homeAway'] as String?) == 'home';
-        final score   = double.tryParse(comp['score']?.toString() ?? '');
-        if (isHome) {
-          homeScore = score;
-        } else {
-          awayScore = score;
-        }
+        final comp   = c as Map<String, dynamic>;
+        final isHome = (comp['homeAway'] as String?) == 'home';
+        final score  = double.tryParse(comp['score']?.toString() ?? '');
+        if (isHome) { homeScore = score; } else { awayScore = score; }
       }
       if (homeScore == null || awayScore == null) return null;
-      if (homeScore > awayScore) return 'home';
-      if (awayScore > homeScore) return 'away';
-      return 'draw';
+
+      final winner = homeScore > awayScore ? 'home' : awayScore > homeScore ? 'away' : 'draw';
+      return (winner: winner, homeScore: homeScore, awayScore: awayScore);
     } catch (_) {
       return null;
     }

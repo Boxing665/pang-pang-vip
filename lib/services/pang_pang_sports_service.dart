@@ -14,6 +14,7 @@ import '../models/odds_snapshot.dart';
 import '../config/app_config.dart';
 import 'remote_config_service.dart';
 import 'prediction_log_service.dart';
+import 'self_learning_service.dart';
 import 'real_data_service.dart';
 import 'odds_api_service.dart';
 import 'lottery_service.dart';
@@ -2793,6 +2794,9 @@ class PangPangSportsService {
   /// 各運動歷史偏差修正係數（由歷史紀錄動態計算）
   Map<SportType, SportBiasData> _biasDataByType = {};
 
+  /// 大小分 AI 偏差乘數（預載入，供同步 predictMatch 使用）
+  Map<SportType, double> _ouBiasMultipliers = {};
+
   /// 樂透/賓果 AI 學習結果（'lottery539' / 'bingo'）
   final Map<String, LotteryLearningData> _lotteryLearningByType = {};
 
@@ -2823,6 +2827,8 @@ class PangPangSportsService {
         await _loadLinearRegressionCoeffs();
         // 從歷史紀錄載入偏差修正係數
         await _loadBiasData();
+        // 預載大小分偏差乘數（AI 訓練結果）
+        await _loadOUBiasMultipliers();
       } catch (e) {
         debugPrint('⚠️ 體育服務背景初始化異常: $e');
       }
@@ -3103,6 +3109,16 @@ class PangPangSportsService {
       debugPrint('⚠️ 載入偏差數據失敗: $e');
       _biasDataByType = {};
     }
+  }
+
+  /// 預載各運動大小分偏差乘數（來自 SelfLearningService AI 訓練結果）
+  Future<void> _loadOUBiasMultipliers() async {
+    _ouBiasMultipliers = {
+      SportType.basketball: await SelfLearningService.getOUBiasMultiplier('basketball'),
+      SportType.baseball:   await SelfLearningService.getOUBiasMultiplier('baseball'),
+      SportType.football:   await SelfLearningService.getOUBiasMultiplier('football'),
+    };
+    debugPrint('📊 O/U 偏差乘數: ${_ouBiasMultipliers.values.map((v) => v.toStringAsFixed(3)).join(', ')}');
   }
 
   /// 從歷史樂透 / 賓果預測學習命中規律
@@ -3622,16 +3638,18 @@ class PangPangSportsService {
     final mlWeights = RemoteConfigService().soccerWeightsNotifier.value;
     final lrCoeffs = _leagueRegressionCoeffs[fixture.league] ?? {};
     final homeNewsMult = SportsNewsService.getNewsModifier(
-        fixture.homeForm.teamId, fixture.sport);
+        fixture.homeForm.teamId, fixture.sport, league: fixture.league);
     final awayNewsMult = SportsNewsService.getNewsModifier(
-        fixture.awayForm.teamId, fixture.sport);
+        fixture.awayForm.teamId, fixture.sport, league: fixture.league);
+    // 大小分 AI 偏差修正（學習莊家開分習慣）
+    final ouMult = _ouBiasMultipliers[fixture.sport] ?? 1.0;
     final result = _predictionEngine.predictScore(
       fixture,
       bias: bias,
       mlWeights: mlWeights,
       linearRegressionCoeffs: lrCoeffs,
-      lineupHomeMultiplier: homeNewsMult,
-      lineupAwayMultiplier: awayNewsMult,
+      lineupHomeMultiplier: homeNewsMult * ouMult,
+      lineupAwayMultiplier: awayNewsMult * ouMult,
     );
     _sessionPredCache[fixture.id] = result;
     return result;
@@ -3646,9 +3664,9 @@ class PangPangSportsService {
   }) {
     // 新聞修正係數（傷兵/利多訊號）
     double homeMult = SportsNewsService.getNewsModifier(
-        fixture.homeForm.teamId, fixture.sport);
+        fixture.homeForm.teamId, fixture.sport, league: fixture.league);
     double awayMult = SportsNewsService.getNewsModifier(
-        fixture.awayForm.teamId, fixture.sport);
+        fixture.awayForm.teamId, fixture.sport, league: fixture.league);
     final coreInjuryDetails = <String>[];
 
     switch (fixture.sport) {
