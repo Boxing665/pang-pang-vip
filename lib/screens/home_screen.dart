@@ -445,6 +445,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         prediction: pred,
                         onTap: () => _showBreakdown(context, m, pred),
                       ),
+                      if (!isCompleted)
+                        _BetRecommendationBar(fixture: m, prediction: pred),
                       if (isCompleted)
                         _SportResultBar(
                           log: log,
@@ -738,6 +740,183 @@ class _ScoreBox extends StatelessWidget {
           filled: true,
           fillColor: Colors.white.withAlpha(12),
         ),
+      ),
+    );
+  }
+}
+
+// ── 下注建議列 ────────────────────────────────────────────────────
+class _BetRecommendationBar extends StatelessWidget {
+  const _BetRecommendationBar({
+    required this.fixture,
+    required this.prediction,
+  });
+
+  final MatchFixture fixture;
+  final MatchPrediction prediction;
+
+  // 分析所有模型訊號，輸出最強建議
+  ({String label, String emoji, Color color, String reason, double conf}) _analyze() {
+    final pred = prediction;
+    final odds = fixture.odds;
+
+    // ── 1. 大小分建議 ──────────────────────────────────────────
+    // AI 預測總分 vs 莊家大小分線
+    final aiTotal = pred.aiTotalExpected > 0
+        ? pred.aiTotalExpected
+        : (pred.predictedHomeScore + pred.predictedAwayScore).toDouble();
+    final overLine = odds.overLine;
+    final overEdge  = aiTotal - overLine;
+    final isOver    = overEdge > 0.5;
+    final isUnder   = overEdge < -0.5;
+
+    // ── 2. 勝負建議 ──────────────────────────────────────────
+    final ensH = pred.ensembleHomeWinPct;
+    final ensD = pred.ensembleDrawPct;
+    final ensA = pred.ensembleAwayWinPct;
+
+    // 凱利值：正值 = 正期望，推薦該方向
+    final kellyH = pred.kellyHome;
+    final kellyA = pred.kellyAway;
+
+    // 是否有顯著 value bet
+    final valueH = pred.homeValueEdge;
+    final valueA = pred.awayValueEdge;
+
+    // ── 3. 聰明錢信號 ─────────────────────────────────────────
+    final smartMoney = odds.hasReverseLineMovement;
+
+    // ── 4. 決策邏輯 ──────────────────────────────────────────
+    // 優先度：大小分確定性 > 主客勝負 value bet > 聰明錢
+    if (isOver && overEdge > 1.5) {
+      final conf = (0.5 + overEdge / 6.0).clamp(0.55, 0.92);
+      return (
+        label: '推薦下大分  ${overLine.toStringAsFixed(1)}',
+        emoji: '📈',
+        color: const Color(0xFFFF6B35),
+        reason: 'AI預測${aiTotal.toStringAsFixed(1)}分 > 莊家線${overLine.toStringAsFixed(1)}，賠率${odds.overOdds.toStringAsFixed(2)}',
+        conf: conf,
+      );
+    }
+    if (isUnder && overEdge < -1.5) {
+      final conf = (0.5 + (-overEdge) / 6.0).clamp(0.55, 0.92);
+      return (
+        label: '推薦下小分  ${overLine.toStringAsFixed(1)}',
+        emoji: '📉',
+        color: const Color(0xFF42A5F5),
+        reason: 'AI預測${aiTotal.toStringAsFixed(1)}分 < 莊家線${overLine.toStringAsFixed(1)}，賠率${odds.underOdds.toStringAsFixed(2)}',
+        conf: conf,
+      );
+    }
+    if (pred.hasValueBetSignal && kellyH > 0.05 && valueH > 0.08) {
+      final conf = (0.5 + valueH).clamp(0.55, 0.88);
+      return (
+        label: '推薦主勝  ${fixture.homeTeam}',
+        emoji: '🏆',
+        color: const Color(0xFF66BB6A),
+        reason: '模型勝率${(ensH * 100).round()}% > 隱含機率，Kelly=${kellyH.toStringAsFixed(2)}',
+        conf: conf,
+      );
+    }
+    if (pred.hasValueBetSignal && kellyA > 0.05 && valueA > 0.08) {
+      final conf = (0.5 + valueA).clamp(0.55, 0.88);
+      return (
+        label: '推薦客勝  ${fixture.awayTeam}',
+        emoji: '🏆',
+        color: const Color(0xFF66BB6A),
+        reason: '模型勝率${(ensA * 100).round()}% > 隱含機率，Kelly=${kellyA.toStringAsFixed(2)}',
+        conf: conf,
+      );
+    }
+    if (ensD > 0.32 && ensH < 0.42 && ensA < 0.42) {
+      return (
+        label: '平局機率高，建議觀望',
+        emoji: '🤝',
+        color: Colors.amber,
+        reason: '多模型平局機率${(ensD * 100).round()}%，雙方勝率相近',
+        conf: ensD,
+      );
+    }
+    if (smartMoney) {
+      final favHome = ensH > ensA;
+      return (
+        label: favHome ? '聰明錢偏${fixture.homeTeam}' : '聰明錢偏${fixture.awayTeam}',
+        emoji: '💡',
+        color: Colors.purpleAccent,
+        reason: '盤口逆向移動，資金流向異常，慎入',
+        conf: 0.55,
+      );
+    }
+    // 無強訊號
+    final favHome = ensH > ensA;
+    return (
+      label: favHome ? '微弱偏主 ${fixture.homeTeam}' : '微弱偏客 ${fixture.awayTeam}',
+      emoji: '⚠️',
+      color: Colors.white38,
+      reason: '訊號弱，不建議重倉',
+      conf: 0.50,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final rec = _analyze();
+    final confPct = (rec.conf * 100).round();
+
+    return Container(
+      margin: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: rec.color.withAlpha(20),
+        borderRadius: const BorderRadius.only(
+          bottomLeft: Radius.circular(12),
+          bottomRight: Radius.circular(12),
+        ),
+        border: Border.all(color: rec.color.withAlpha(60)),
+      ),
+      child: Row(
+        children: [
+          Text(rec.emoji, style: const TextStyle(fontSize: 16)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  rec.label,
+                  style: TextStyle(
+                    color: rec.color,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  rec.reason,
+                  style: const TextStyle(color: Colors.white54, fontSize: 10),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: rec.color.withAlpha(40),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              '信心 $confPct%',
+              style: TextStyle(
+                color: rec.color,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

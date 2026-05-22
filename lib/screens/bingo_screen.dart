@@ -2,11 +2,9 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import '../models/prediction_log.dart';
 import '../services/bingo_service.dart';
 import '../services/prediction_log_service.dart';
 import '../services/self_learning_service.dart';
-import '../widgets/lottery_prediction_card.dart';
 
 // Top-level functions required by compute() to run on separate isolate
 // Argument: (records, strategyMode, zoneMultipliers)
@@ -45,8 +43,6 @@ class _BingoScreenState extends State<BingoScreen>
   int? _selectedBall;    // tapped ball number
   int _tab = 0;          // 0=連帶 1=頭遺漏 2=尾遺漏 3=統計 4=歷史 5=準確率 6=同出型態 7=型態分析
   List<AccuracySummary> _accuracy = [];
-  // 上一期預測對照
-  PredictionLog? _lastPredLog;
 
   Timer? _timer;
   late AnimationController _pulseCtrl;
@@ -166,16 +162,6 @@ class _BingoScreenState extends State<BingoScreen>
       );
     }
 
-    // 取得最近一筆已有實際開獎結果的預測（用於「上一期對照」）
-    final bingoLogs = await _logSvc.loadByType(PredictionType.bingo);
-    final lastCompleted = bingoLogs.firstWhere(
-      (l) => (l.actualResult ?? '').isNotEmpty,
-      orElse: () => bingoLogs.isNotEmpty ? bingoLogs.first : PredictionLog(
-        id: '', type: PredictionType.bingo, createdAt: DateTime.now(),
-        title: '', subtitle: '', predictedResult: '',
-      ),
-    );
-
     if (!mounted) return;
     setState(() {
       _isLoading = false;
@@ -185,10 +171,6 @@ class _BingoScreenState extends State<BingoScreen>
         _pred = pred;
       } else {
         _errorMsg = '資料載入失敗，請確認網路後重試';
-      }
-      if (lastCompleted.id.isNotEmpty &&
-          (lastCompleted.actualResult ?? '').isNotEmpty) {
-        _lastPredLog = lastCompleted;
       }
     });
   }
@@ -418,14 +400,6 @@ class _BingoScreenState extends State<BingoScreen>
                   SliverFillRemaining(child: _errorView())
                 else if (_pred != null) ...[
                   SliverToBoxAdapter(child: _latestDraw()),
-                  if (_lastPredLog != null)
-                    SliverToBoxAdapter(child: _lastDrawComparison(_lastPredLog!)),
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      child: BingoPredictionCard(records: _records, pred: _pred!),
-                    ),
-                  ),
                   SliverToBoxAdapter(child: _predictionPanel()),
                   SliverToBoxAdapter(child: _heatmapGrid()),
                   if (_selectedBall != null)
@@ -570,13 +544,27 @@ class _BingoScreenState extends State<BingoScreen>
   }
 
   // ── Latest Draw Strip ─────────────────────────────────────────
+  // Colors: green = last draw, red = repeated from prev draw, pink = last ball drawn
+
+  static const _colorDrawGreen = Color(0xFF00CC44);
+  static const _colorDrawRed   = Color(0xFFFF2222);
+  static const _colorDrawPink  = Color(0xFFFF69B4);
 
   Widget _latestDraw() {
     if (_records.isEmpty) return const SizedBox();
     final r = _records.first;
+    final prevNums = _records.length > 1 ? _records[1].numbers.toSet() : <int>{};
+    final lastBall = r.numbers.isNotEmpty ? r.numbers.last : -1;
+
+    Color _ballColor(int n) {
+      if (n == lastBall) return _colorDrawPink;
+      if (prevNums.contains(n)) return _colorDrawRed;
+      return _colorDrawGreen;
+    }
+
     return Container(
       margin: const EdgeInsets.fromLTRB(14, 6, 14, 6),
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.black.withAlpha(60),
         borderRadius: BorderRadius.circular(12),
@@ -591,165 +579,100 @@ class _BingoScreenState extends State<BingoScreen>
               const SizedBox(width: 4),
               Text('最新: 第 ${r.drawNo} 期  ${r.drawTime}',
                   style: const TextStyle(
-                      color: _gold,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 12)),
+                      color: _gold, fontWeight: FontWeight.w700, fontSize: 12)),
               if (r.superNum.isNotEmpty) ...[
                 const Spacer(),
                 Text(' 超獎 ${r.superNum}',
-                    style: const TextStyle(
-                        color: Colors.orange, fontSize: 11)),
+                    style: const TextStyle(color: Colors.orange, fontSize: 11)),
               ],
+            ],
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              _legendDot(_colorDrawGreen, '本期'),
+              const SizedBox(width: 10),
+              _legendDot(_colorDrawRed, '重複'),
+              const SizedBox(width: 10),
+              _legendDot(_colorDrawPink, '最後一顆'),
             ],
           ),
           const SizedBox(height: 8),
           Wrap(
-            spacing: 4,
-            runSpacing: 4,
-            children: r.numbers.map((n) => _miniLatestBall(n)).toList(),
+            spacing: 5,
+            runSpacing: 5,
+            children: r.numbers.map((n) {
+              final c = _ballColor(n);
+              return Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: c,
+                  shape: BoxShape.circle,
+                  boxShadow: [BoxShadow(color: c.withAlpha(100), blurRadius: 5)],
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  n.toString().padLeft(2, '0'),
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w900,
+                    color: c == _colorDrawGreen ? Colors.white : Colors.white,
+                  ),
+                ),
+              );
+            }).toList(),
           ),
         ],
       ),
     );
   }
 
-  Widget _miniLatestBall(int n) {
-    return Container(
-      width: 28,
-      height: 28,
-      decoration: BoxDecoration(
-        color: _gold,
-        shape: BoxShape.circle,
-        boxShadow: [
-          BoxShadow(color: _gold.withAlpha(80), blurRadius: 6)
-        ],
-      ),
-      alignment: Alignment.center,
-      child: Text(
-        n.toString().padLeft(2, '0'),
-        style: const TextStyle(
-            fontSize: 9,
-            fontWeight: FontWeight.w900,
-            color: Colors.black),
-      ),
-    );
+  Widget _legendDot(Color c, String label) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Container(width: 9, height: 9, decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+      const SizedBox(width: 3),
+      Text(label, style: const TextStyle(color: Colors.white54, fontSize: 9)),
+    ],
+  );
+
+  // ── Prediction Panel (胖胖最強推薦 - 單一最佳預測) ─────────────
+
+  // 合併所有演算法：同出配對 + 熱度 + 遺漏率 → 選出最佳 8 顆
+  List<int> _computeBestPick(BingoPrediction pred) {
+    final scoreMap = <int, double>{};
+    for (var n = 1; n <= 80; n++) {
+      final s = pred.stats[n];
+      if (s == null) continue;
+      double sc = s.heatScore * 0.4;
+      // 遺漏加分：距上次開出越久，越有補開機會
+      final gapRatio = s.avgGap > 0 ? (s.gap / s.avgGap).clamp(0.0, 2.0) : 0.0;
+      sc += gapRatio * 0.25;
+      // 同出（co-occurrence）配對加分
+      for (final p in pred.topPairs) {
+        if (p.a == n || p.b == n) sc += p.rate * 0.15;
+      }
+      // 已在 recommended 加分
+      if (pred.recommended.contains(n)) sc += 0.2;
+      // carryOver 加分
+      if (pred.carryOverNumbers.contains(n)) sc += 0.15;
+      scoreMap[n] = sc;
+    }
+    final sorted = scoreMap.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return sorted.take(8).map((e) => e.key).toList()..sort();
   }
-
-  // ── 上一期預測對照 ──────────────────────────────────────────────
-
-  Widget _lastDrawComparison(PredictionLog log) {
-    final predicted = log.predictedResult
-        .split(' ')
-        .map((s) => int.tryParse(s))
-        .whereType<int>()
-        .toList();
-    final actualStr = log.actualResult ?? '';
-    final actual = actualStr
-        .split(' ')
-        .map((s) => int.tryParse(s))
-        .whereType<int>()
-        .toSet();
-    final hits = predicted.where((n) => actual.contains(n)).toList();
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: const Color(0xFF0D1E4A),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: _gold.withAlpha(80)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.history_rounded, color: Color(0xFFFFD700), size: 16),
-                const SizedBox(width: 6),
-                Text(log.title,
-                    style: const TextStyle(color: Color(0xFFFFD700), fontWeight: FontWeight.w700, fontSize: 13)),
-                const Spacer(),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: hits.length >= 3
-                        ? Colors.green.withAlpha(50)
-                        : hits.length >= 2
-                            ? Colors.orange.withAlpha(50)
-                            : Colors.red.withAlpha(40),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    '命中 ${hits.length} / ${predicted.length}',
-                    style: TextStyle(
-                      color: hits.length >= 3
-                          ? Colors.greenAccent
-                          : hits.length >= 2
-                              ? Colors.orange
-                              : Colors.redAccent,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            // 預測號碼列
-            Text('上期預測', style: TextStyle(color: Colors.white38, fontSize: 11)),
-            const SizedBox(height: 4),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: predicted.map((n) {
-                final isHit = actual.contains(n);
-                return Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: isHit ? _gold.withAlpha(200) : const Color(0xFF1A3A6B),
-                    border: isHit ? null : Border.all(color: Colors.white24),
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    '$n',
-                    style: TextStyle(
-                      color: isHit ? Colors.black : Colors.white54,
-                      fontSize: 11,
-                      fontWeight: isHit ? FontWeight.w800 : FontWeight.w500,
-                    ),
-                  ),
-                );
-              }).toList(),
-            ),
-            if (actual.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              Text('實際開獎', style: TextStyle(color: Colors.white38, fontSize: 11)),
-              const SizedBox(height: 4),
-              Text(
-                actualStr.replaceAll(' ', '  '),
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ── Prediction Panel (胖胖賓果預測) ──────────────────────────
 
   Widget _predictionPanel() {
     final pred = _pred;
     if (pred == null) return const SizedBox();
-    final latestNums =
-        _records.isNotEmpty ? _records.first.numbers.toSet() : <int>{};
+    final bestPick = _computeBestPick(pred);
+    final latestNums = _records.isNotEmpty ? _records.first.numbers.toSet() : <int>{};
 
     return Container(
       margin: const EdgeInsets.fromLTRB(14, 6, 14, 6),
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
           colors: [Color(0xFF100828), Color(0xFF0A1535)],
@@ -757,345 +680,146 @@ class _BingoScreenState extends State<BingoScreen>
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _gold.withAlpha(80), width: 1.5),
-        boxShadow: [
-          BoxShadow(color: _gold.withAlpha(30), blurRadius: 12),
-        ],
+        border: Border.all(color: _gold.withAlpha(100), width: 1.5),
+        boxShadow: [BoxShadow(color: _gold.withAlpha(40), blurRadius: 14)],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Title
           Row(
             children: [
-              const Text('🎱', style: TextStyle(fontSize: 16)),
-              const SizedBox(width: 6),
-              Text(
-                '胖胖賓果預測  ·  第 ${pred.nextDrawNo} 期',
-                style: const TextStyle(
-                  color: _gold,
-                  fontWeight: FontWeight.w900,
-                  fontSize: 15,
-                  letterSpacing: 0.5,
+              const Text('🎱', style: TextStyle(fontSize: 17)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '胖胖最強推薦  ·  第 ${pred.nextDrawNo} 期',
+                  style: const TextStyle(
+                    color: _gold, fontWeight: FontWeight.w900, fontSize: 16, letterSpacing: 0.5),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 4),
-          if (pred.strategy.isNotEmpty)
-            Text(
-              pred.strategy,
-              style: TextStyle(color: _cyan.withAlpha(200), fontSize: 11),
-            ),
-          const SizedBox(height: 12),
-
-          // Carry-over section
-          if (pred.carryOverNumbers.isNotEmpty) ...[
-            Row(
-              children: [
-                const Text('🔁 連莊推薦',
-                    style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600)),
-                const SizedBox(width: 6),
-                Text(
-                  '信心 ${(pred.carryOverConfidence * 100).round()}%',
-                  style: TextStyle(
-                      color: _cyan.withAlpha(180), fontSize: 10),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: pred.carryOverNumbers.map((n) {
-                final s = pred.stats[n]!;
-                final isLatest = latestNums.contains(n);
-                final ballColor =
-                    isLatest ? _colorLatest : _heatColor(s.heatScore);
-                return _predBall(n, ballColor, isLatest, s.gap);
-              }).toList(),
-            ),
-            const SizedBox(height: 12),
+          if (pred.strategy.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(pred.strategy,
+                style: TextStyle(color: _cyan.withAlpha(200), fontSize: 11)),
           ],
-
-          // Recommended section
-          const Text('⭐ 統計推薦',
-              style: TextStyle(
-                  color: Colors.white70,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600)),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: pred.recommended.map((n) {
+          const SizedBox(height: 14),
+          // 8 best balls
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: bestPick.map((n) {
               final s = pred.stats[n]!;
               final isLatest = latestNums.contains(n);
-              final ballColor =
-                  isLatest ? _colorLatest : _heatColor(s.heatScore);
-              return _predBall(n, ballColor, isLatest, s.gap);
+              final c = isLatest ? _colorLatest : _heatColor(s.heatScore);
+              return Container(
+                width: 50,
+                height: 50,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: c,
+                  border: Border.all(color: _gold.withAlpha(180), width: 1.8),
+                  boxShadow: [BoxShadow(color: c.withAlpha(120), blurRadius: 10)],
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      n.toString().padLeft(2, '0'),
+                      style: TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w900,
+                        color: isLatest ? Colors.black : Colors.white, height: 1),
+                    ),
+                    Text(
+                      s.gap == 0 ? '◎' : '${s.gap}',
+                      style: TextStyle(
+                        fontSize: 8,
+                        color: isLatest ? Colors.black54 : s.gap <= 4 ? Colors.greenAccent : Colors.white54,
+                        height: 1.1),
+                    ),
+                  ],
+                ),
+              );
             }).toList(),
           ),
-
-          // Hot numbers
-          if (pred.hotNumbers.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            const Text('🔥 熱門號碼',
-                style: TextStyle(
-                    color: Colors.white70,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 4,
-              runSpacing: 4,
-              children: pred.hotNumbers.take(10).map((n) {
-                final isLatest = latestNums.contains(n);
-                return Container(
-                  width: 30,
-                  height: 30,
-                  decoration: BoxDecoration(
-                    color: isLatest
-                        ? _colorLatest
-                        : _colorHot.withAlpha(160),
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                        color: Colors.orange.withAlpha(120)),
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    n.toString().padLeft(2, '0'),
-                    style: TextStyle(
-                        fontSize: 9,
-                        fontWeight: FontWeight.w800,
-                        color:
-                            isLatest ? Colors.black : Colors.white),
-                  ),
-                );
-              }).toList(),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _predBall(int n, Color ballColor, bool isLatest, int gap) {
-    return Container(
-      width: 46,
-      height: 46,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: ballColor,
-        border: Border.all(color: _gold.withAlpha(160), width: 1.5),
-        boxShadow: [
-          BoxShadow(color: ballColor.withAlpha(100), blurRadius: 8)
-        ],
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
+          const SizedBox(height: 12),
           Text(
-            n.toString().padLeft(2, '0'),
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w900,
-              color: isLatest ? Colors.black : Colors.white,
-              height: 1,
-            ),
-          ),
-          Text(
-            gap == 0 ? '◎' : '$gap',
-            style: TextStyle(
-              fontSize: 8,
-              color: isLatest
-                  ? Colors.black54
-                  : gap <= 4
-                      ? Colors.greenAccent
-                      : Colors.white54,
-              height: 1.1,
-            ),
+            '★ 綜合同出配對 · 熱度 · 遺漏率三維評分，自動選出最佳 8 顆',
+            style: TextStyle(color: Colors.white38, fontSize: 10),
           ),
         ],
       ),
     );
   }
 
-  // ── Heatmap Grid ─────────────────────────────────────────────
+  // ── Hot/Cold Number Lists (替換舊圓球熱力圖) ────────────────────
 
   Widget _heatmapGrid() {
     final pred = _pred!;
-    final latestNums =
-        _records.isNotEmpty ? _records.first.numbers.toSet() : <int>{};
-    final recNums = pred.recommended.toSet();
-    final coPartners = _selectedBall != null
-        ? pred.topPairs
-            .where((p) => p.a == _selectedBall || p.b == _selectedBall)
-            .map((p) => p.a == _selectedBall ? p.b : p.a)
-            .take(5)
-            .toSet()
-        : <int>{};
+    // 按頻率排序：hotNumbers 已是高→低，coldNumbers 已是低→高
+    final hot = pred.hotNumbers;
+    final cold = pred.coldNumbers;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Legend row
-          Padding(
-            padding: const EdgeInsets.only(bottom: 6, top: 2),
-            child: Row(
-              children: [
-                const Text('號碼熱力圖',
-                    style: TextStyle(
-                        color: _cyan,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 13)),
-                const Spacer(),
-                _legendItem(_colorHot, '熱'),
-                const SizedBox(width: 8),
-                _legendItem(_colorCold, '冷'),
-                const SizedBox(width: 8),
-                _legendItem(_gold, '本期'),
-                const SizedBox(width: 8),
-                _legendItem(Colors.white.withAlpha(180), '推薦★'),
-              ],
-            ),
-          ),
-          // 8 rows × 10 cols
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate:
-                const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 10,
-              crossAxisSpacing: 3,
-              mainAxisSpacing: 3,
-              childAspectRatio: 0.82,
-            ),
-            itemCount: 80,
-            itemBuilder: (_, i) {
-              final n = i + 1;
-              final stats = pred.stats[n]!;
-              final isLatest = latestNums.contains(n);
-              final isRec = recNums.contains(n);
-              final isSelected = _selectedBall == n;
-              final isPartner = coPartners.contains(n);
-              return GestureDetector(
-                onTap: () => setState(() =>
-                    _selectedBall = _selectedBall == n ? null : n),
-                child: _heatBall(
-                  n, stats, isLatest, isRec, isSelected, isPartner),
-              );
-            },
-          ),
-          const SizedBox(height: 4),
-          // Tap hint
-          Center(
-            child: Text(
-              _selectedBall != null
-                  ? '點選其他球取消選擇'
-                  : '點選號碼查看詳細統計',
-              style: const TextStyle(
-                  color: Colors.white38, fontSize: 10),
-            ),
-          ),
+          // ── 熱門號碼 ──────────────────────────────────────────
+          const Text('🔥 熱門號碼（出現最多 → 最少）',
+              style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.w700, fontSize: 13)),
+          const SizedBox(height: 8),
+          _numberRankList(hot.take(20).toList(), isHot: true, pred: pred),
+          const SizedBox(height: 14),
+          // ── 冷門號碼 ──────────────────────────────────────────
+          const Text('❄️ 冷門號碼（出現最少 → 最多）',
+              style: TextStyle(color: Color(0xFF64B5F6), fontWeight: FontWeight.w700, fontSize: 13)),
+          const SizedBox(height: 8),
+          _numberRankList(cold.take(20).toList(), isHot: false, pred: pred),
         ],
       ),
     );
   }
 
-  Widget _heatBall(int n, BingoStats s, bool isLatest, bool isRec,
-      bool isSelected, bool isPartner) {
-    Color ballColor;
-    if (isLatest) {
-      ballColor = _colorLatest;
-    } else {
-      ballColor = _heatColor(s.heatScore);
-    }
-
-    // Overlay tint for partners
-    if (isPartner && !isLatest) {
-      ballColor = Color.lerp(ballColor, Colors.purple, 0.5)!;
-    }
-
-    final textColor = isLatest ? Colors.black : Colors.white;
-    final borderColor = isSelected
-        ? Colors.white
-        : isRec
-            ? _gold
-            : isPartner
-                ? Colors.purpleAccent
-                : Colors.transparent;
-    final borderWidth = (isSelected || isRec || isPartner) ? 1.5 : 0.0;
-
-    // Gap badge color
-    Color gapColor;
-    if (s.gap == 0) {
-      gapColor = _gold;
-    } else if (s.gap <= 4) {
-      gapColor = Colors.green.shade300;
-    } else if (s.gap <= 8) {
-      gapColor = Colors.orange;
-    } else {
-      gapColor = Colors.red.shade300;
-    }
-
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      decoration: BoxDecoration(
-        color: ballColor,
-        shape: BoxShape.circle,
-        border: Border.all(color: borderColor, width: borderWidth),
-        boxShadow: isSelected
-            ? [BoxShadow(
-                color: Colors.white.withAlpha(120), blurRadius: 8)]
-            : isLatest
-                ? [BoxShadow(
-                    color: _gold.withAlpha(120), blurRadius: 6)]
-                : null,
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          // Star for recommended
-          if (isRec)
-            const SizedBox() // replaced with overlay in stack approach
-          else
-            const SizedBox(height: 2),
-          Text(
-            n.toString().padLeft(2, '0'),
-            style: TextStyle(
-              fontSize: n < 10 ? 11 : 10,
-              fontWeight: FontWeight.w800,
-              color: textColor,
-              height: 1,
-            ),
+  Widget _numberRankList(List<int> nums, {required bool isHot, required BingoPrediction pred}) {
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: nums.asMap().entries.map((entry) {
+        final rank = entry.key + 1;
+        final n = entry.value;
+        final s = pred.stats[n]!;
+        final bg = isHot
+            ? Color.lerp(const Color(0xFFE65100), const Color(0xFFFF1800), entry.key / nums.length)!
+            : Color.lerp(const Color(0xFF1565C0), const Color(0xFF0D1B4A), entry.key / nums.length)!;
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+          decoration: BoxDecoration(
+            color: bg.withAlpha(200),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: bg.withAlpha(120)),
           ),
-          // Gap badge
-          Text(
-            s.gapLabel == '本期' ? '◎' : '${s.gap}',
-            style: TextStyle(
-              fontSize: 7,
-              color: gapColor,
-              fontWeight: FontWeight.w700,
-              height: 1.1,
-            ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '$rank.',
+                style: const TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(width: 3),
+              Text(
+                n.toString().padLeft(2, '0'),
+                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(width: 4),
+              Text(
+                '${s.frequency}次',
+                style: const TextStyle(color: Colors.white60, fontSize: 9),
+              ),
+            ],
           ),
-          if (isRec)
-            Text('★',
-                style: TextStyle(
-                    fontSize: 7,
-                    color: _gold,
-                    height: 1,
-                    fontWeight: FontWeight.w900))
-          else
-            const SizedBox(height: 5),
-        ],
-      ),
+        );
+      }).toList(),
     );
   }
 
@@ -1106,12 +830,9 @@ class _BingoScreenState extends State<BingoScreen>
         Container(
             width: 10,
             height: 10,
-            decoration:
-                BoxDecoration(color: c, shape: BoxShape.circle)),
+            decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
         const SizedBox(width: 3),
-        Text(label,
-            style:
-                const TextStyle(color: Colors.white60, fontSize: 9)),
+        Text(label, style: const TextStyle(color: Colors.white60, fontSize: 9)),
       ],
     );
   }

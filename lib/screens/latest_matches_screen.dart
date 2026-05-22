@@ -1184,92 +1184,6 @@ class _StatBadge extends StatelessWidget {
   }
 }
 
-// ── AI 預測徽章 ───────────────────────────────────────────────────
-class _PredictionBadge extends StatelessWidget {
-  const _PredictionBadge({required this.match, required this.prediction});
-  final MatchFixture match;
-  final MatchPrediction prediction;
-
-  @override
-  Widget build(BuildContext context) {
-    final h = prediction.predictedHomeScore;
-    final a = prediction.predictedAwayScore;
-    final confPct = (prediction.confidence * 100).round();
-
-    // 決定預測勝方標籤
-    final String winnerLabel;
-    if (match.sport == SportType.football) {
-      if (h > a) {
-        winnerLabel = '主勝';
-      } else if (h < a) {
-        winnerLabel = '客勝';
-      } else {
-        winnerLabel = '平局';
-      }
-    } else {
-      winnerLabel = h >= a ? '主勝' : '客勝';
-    }
-
-    final winnerColor = winnerLabel == '主勝'
-        ? const Color(0xFF4FC3F7)
-        : winnerLabel == '客勝'
-            ? const Color(0xFFFFB74D)
-            : Colors.white54;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: AppTheme.primaryAccent.withValues(alpha: 0.07),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppTheme.primaryAccent.withValues(alpha: 0.2)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            children: [
-              const Text('🤖 ', style: TextStyle(fontSize: 11)),
-              Text(
-                '預測比分  $h : $a',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ],
-          ),
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                decoration: BoxDecoration(
-                  color: winnerColor.withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: winnerColor.withValues(alpha: 0.5)),
-                ),
-                child: Text(
-                  winnerLabel,
-                  style: TextStyle(
-                    color: winnerColor,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                '信心 $confPct%',
-                style: const TextStyle(color: Colors.white38, fontSize: 10),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 // ── 比賽列表卡片 ──────────────────────────────────────────────────
 class _MatchTile extends StatelessWidget {
@@ -1495,10 +1409,6 @@ class _MatchTile extends StatelessWidget {
                       letterSpacing: 0.3),
                 ),
               ),
-            ],
-            if (prediction != null && match.status != MatchStatus.completed) ...[
-              const SizedBox(height: 8),
-              _PredictionBadge(match: match, prediction: prediction!),
             ],
             if (match.sport == SportType.baseball) ...[
               const SizedBox(height: 6),
