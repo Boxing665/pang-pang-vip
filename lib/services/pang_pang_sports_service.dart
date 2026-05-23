@@ -20,6 +20,7 @@ import 'odds_api_service.dart';
 import 'lottery_service.dart';
 import 'bingo_service.dart';
 import 'sports_news_service.dart';
+import 'sport_analysis_news_service.dart';
 
 // ============================================
 // 🎯 預測引擎相關類別
@@ -3553,6 +3554,7 @@ class PangPangSportsService {
 
         // 背景預取各隊最新新聞（不阻塞 UI）
         SportsNewsService.prefetchForFixtures(realMatches);
+        SportAnalysisNewsService.prefetchForFixtures(realMatches);
 
         // 🚀 成功後自動更新離線備援
         _saveToPersistentCache(realMatches);
@@ -3667,6 +3669,8 @@ class PangPangSportsService {
         fixture.homeForm.teamId, fixture.sport, league: fixture.league);
     final awayNewsMult = SportsNewsService.getNewsModifier(
         fixture.awayForm.teamId, fixture.sport, league: fixture.league);
+    // 專業新聞分析修正（nowscore.com / Yahoo 體育）
+    final analysis = SportAnalysisNewsService.getAnalysis(fixture);
     // 大小分 AI 偏差修正（學習莊家開分習慣）
     final ouMult = _ouBiasMultipliers[fixture.sport] ?? 1.0;
     final result = _predictionEngine.predictScore(
@@ -3674,8 +3678,8 @@ class PangPangSportsService {
       bias: bias,
       mlWeights: mlWeights,
       linearRegressionCoeffs: lrCoeffs,
-      lineupHomeMultiplier: homeNewsMult * ouMult,
-      lineupAwayMultiplier: awayNewsMult * ouMult,
+      lineupHomeMultiplier: homeNewsMult * analysis.homeModifier * ouMult,
+      lineupAwayMultiplier: awayNewsMult * analysis.awayModifier * ouMult,
     );
     _sessionPredCache[fixture.id] = result;
     return result;
