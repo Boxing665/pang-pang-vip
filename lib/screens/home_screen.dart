@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/match_fixture.dart';
@@ -8,6 +9,7 @@ import '../services/ai_prediction_service.dart';
 import '../services/pang_pang_sports_service.dart';
 import '../services/prediction_log_service.dart';
 import '../services/real_data_service.dart';
+import '../services/self_learning_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_shell.dart';
 import '../widgets/match_card.dart';
@@ -31,6 +33,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   final _logSvc = PredictionLogService();
   Map<String, PredictionLog> _logsByMatchId = {};
+  Timer? _learningTimer;
 
   static const _usTimezoneLeagues = {'NBA', '美職棒', '美職聯'};
 
@@ -42,10 +45,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     AiPredictionService.instance.runSelfLearning();
     _loadMatches();
     _sportsService.predictionRefreshNotifier.addListener(_onLeagueMatchCompleted);
+    // 每 15 分鐘自動拉取賽果並校正 Perceptron 權重
+    _learningTimer = Timer.periodic(const Duration(minutes: 15), (_) {
+      if (mounted) SelfLearningService.runForced(_logSvc).ignore();
+    });
   }
 
   @override
   void dispose() {
+    _learningTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _sportsService.predictionRefreshNotifier.removeListener(_onLeagueMatchCompleted);
     super.dispose();
@@ -65,6 +73,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void _onLeagueMatchCompleted() {
     if (!mounted) return;
     _loadMatches();
+    // 賽事結束立即強制學習，不受 15 分鐘防抖限制
+    SelfLearningService.runForced(_logSvc).ignore();
   }
 
   void _loadMatches() {

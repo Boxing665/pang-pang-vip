@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/lottery_model.dart';
@@ -7,6 +8,7 @@ import '../services/ai_prediction_service.dart';
 import '../services/lottery_service.dart';
 import '../services/prediction_log_service.dart';
 import '../services/failure_analysis_service.dart';
+import '../services/self_learning_service.dart';
 import '../widgets/lottery_prediction_card.dart';
 
 /// 財神爺樂透預測頁面
@@ -30,6 +32,11 @@ class _LotteryScreenState extends State<LotteryScreen> with WidgetsBindingObserv
 
   bool _isRefreshing = false; // 背景更新中（已有快取資料時）
 
+  // ── 539 自動學習 ───────────────────────────────────────────────
+  String _last539DrawDate = '';      // 上次記錄的開獎日期，避免重複記錄
+  String _current539Strategy = 'balanced'; // 當前使用策略（由自我學習推薦）
+  Timer? _lottery539Timer;           // 每 10 分鐘自動重新學習
+
   // ── 今日開獎比對 ───────────────────────────────────────────────
   final List<TextEditingController> _drawnCtrls =
       List.generate(5, (_) => TextEditingController());
@@ -40,11 +47,22 @@ class _LotteryScreenState extends State<LotteryScreen> with WidgetsBindingObserv
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _initStrategy();
     _loadWithCache();
+    // 每 10 分鐘自動拉取最新開獎並觸發學習
+    _lottery539Timer = Timer.periodic(const Duration(minutes: 10), (_) {
+      if (mounted) _load();
+    });
+  }
+
+  Future<void> _initStrategy() async {
+    final s = await SelfLearningService.getRecommended539Strategy();
+    if (mounted) setState(() => _current539Strategy = s);
   }
 
   @override
   void dispose() {
+    _lottery539Timer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     for (final c in _drawnCtrls) { c.dispose(); }
     super.dispose();
@@ -139,6 +157,30 @@ class _LotteryScreenState extends State<LotteryScreen> with WidgetsBindingObserv
           excludeNumbers: [_taiwanNow.day],
           strategyMultipliers: multipliers,
           newspaperBonuses: npBonuses);
+
+      // ── 539 自動學習：偵測新開獎 → 比對預測 → 更新策略 ─────────
+      if (result.records539.isNotEmpty) {
+        final latestDraw = result.records539.first;
+        if (latestDraw.date.isNotEmpty && latestDraw.date != _last539DrawDate
+            && latestDraw.numbers.isNotEmpty) {
+          _last539DrawDate = latestDraw.date;
+          // 從預測紀錄找出對應這期的預測號碼
+          final logs = await _logSvc.loadByType(PredictionType.lottery);
+          final prev = logs.where((l) =>
+            (l.details['lotteryType'] as String? ?? '').contains('539') &&
+            (l.details['drawNo'] as String? ?? '') == latestDraw.date
+          ).toList();
+          if (prev.isNotEmpty) {
+            final predictedNums = (prev.first.details['numbers'] as List?)
+                ?.map((e) => e as int).toList() ?? [];
+            final hits = predictedNums.where((n) => latestDraw.numbers.contains(n)).length;
+            await SelfLearningService.record539Strategy(_current539Strategy, hits);
+          }
+          // 推薦下一期策略
+          final nextStrategy = await SelfLearningService.getRecommended539Strategy();
+          if (mounted) setState(() => _current539Strategy = nextStrategy);
+        }
+      }
 
       // 若今天開獎已出現在 records 裡，預測的是明天（下一期）
       final drawKey = _nextDrawKey(result.records539);
@@ -729,7 +771,7 @@ class _LotteryScreenState extends State<LotteryScreen> with WidgetsBindingObserv
 
   Widget _dataAnalystSection() {
     final records = _data!.records539;
-    final result = compute539Analysis(records);
+    final result = compute539Analysis(records, strategy: _current539Strategy);
     if (result.hotTop10.isEmpty) return const SizedBox();
 
     return Container(

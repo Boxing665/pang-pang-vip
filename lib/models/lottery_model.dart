@@ -1398,7 +1398,8 @@ class Analyst539Result {
 }
 
 /// 根據歷史記錄執行 Python-style 頻率分析 + 組合篩選
-Analyst539Result compute539Analysis(List<DrawRecord> records) {
+/// strategy: 'balanced'(熱5冷3) | 'hot'(熱6冷2) | 'cold'(熱3冷5) | 'pattern'(熱4中2冷2)
+Analyst539Result compute539Analysis(List<DrawRecord> records, {String strategy = 'balanced'}) {
   final history = records.take(100).toList();
   if (history.isEmpty) {
     return const Analyst539Result(
@@ -1420,11 +1421,34 @@ Analyst539Result compute539Analysis(List<DrawRecord> records) {
   final hotTop10 = sorted.take(10).map((e) => (number: e.key, frequency: e.value)).toList();
   final coldTop10 = sorted.reversed.take(10).toList().map((e) => (number: e.key, frequency: e.value)).toList();
 
-  // ── 3. 選出 8 個號碼組成候選池（熱5 + 冷3） ─────────────────
-  final pool = <int>[
-    ...hotTop10.take(5).map((e) => e.number),
-    ...coldTop10.take(3).map((e) => e.number),
-  ]..sort();
+  // ── 3. 依策略選出 8 個候選號碼 ────────────────────────────────
+  // balanced: 熱5+冷3 | hot: 熱6+冷2 | cold: 熱3+冷5 | pattern: 熱4+中段2+冷2
+  final List<int> pool;
+  switch (strategy) {
+    case 'hot':
+      pool = [
+        ...hotTop10.take(6).map((e) => e.number),
+        ...coldTop10.take(2).map((e) => e.number),
+      ]..sort();
+    case 'cold':
+      pool = [
+        ...hotTop10.take(3).map((e) => e.number),
+        ...coldTop10.take(5).map((e) => e.number),
+      ]..sort();
+    case 'pattern':
+      // 中頻段（排名 5-8，介於熱冷之間）
+      final midRange = sorted.skip(4).take(4).map((e) => e.key).toList();
+      pool = [
+        ...hotTop10.take(4).map((e) => e.number),
+        ...midRange.take(2),
+        ...coldTop10.take(2).map((e) => e.number),
+      ]..sort();
+    default: // balanced
+      pool = [
+        ...hotTop10.take(5).map((e) => e.number),
+        ...coldTop10.take(3).map((e) => e.number),
+      ]..sort();
+  }
 
   // ── 4. 生成所有 C(8,5) = 56 組合 ────────────────────────────
   final allCombos = _combinations(pool, 5);

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' show sqrt;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'prediction_log_service.dart';
@@ -14,8 +15,12 @@ class SelfLearningService {
   static const _weightsKey  = 'sl_signal_weights_v2';
   static const _lastRunKey  = 'sl_last_calibration';
   static const _minSamples  = 5;   // 最少樣本數才觸發校正
-  static const _learningRate = 0.025;
+  static const _baseLearningRate = 0.04; // 動態學習率基準值
   static const _maxAge = Duration(days: 60); // 只用近 60 天的紀錄
+
+  /// 動態學習率：樣本越多越收斂（n=10→0.04, n=40→0.02, n=160→0.01）
+  static double _dynamicLR(int n) =>
+      (_baseLearningRate / (1 + sqrt(n / 10.0))).clamp(0.008, 0.06);
 
   // 各運動預設權重（odds 主導，其餘輔助）
   static const _defaultWeights = <String, Map<String, double>>{
@@ -55,17 +60,25 @@ class SelfLearningService {
     );
   }
 
-  /// 在背景執行：拉取賽果 → 校正權重（每小時最多一次）
+  /// 在背景執行：拉取賽果 → 校正權重（15 分鐘內不重複執行）
   static Future<void> runInBackground(PredictionLogService logSvc) async {
     final prefs = await SharedPreferences.getInstance();
     final lastRaw = prefs.getString(_lastRunKey);
     if (lastRaw != null) {
       final last = DateTime.tryParse(lastRaw);
       if (last != null &&
-          DateTime.now().difference(last) < const Duration(minutes: 30)) {
+          DateTime.now().difference(last) < const Duration(minutes: 15)) {
         return;
       }
     }
+    await _fetchPendingResults(logSvc);
+    await _calibrateWeights(logSvc, prefs);
+    await prefs.setString(_lastRunKey, DateTime.now().toIso8601String());
+  }
+
+  /// 強制執行（不受 15 分鐘防抖限制）：由計時器或賽事結束後觸發
+  static Future<void> runForced(PredictionLogService logSvc) async {
+    final prefs = await SharedPreferences.getInstance();
     await _fetchPendingResults(logSvc);
     await _calibrateWeights(logSvc, prefs);
     await prefs.setString(_lastRunKey, DateTime.now().toIso8601String());
@@ -224,8 +237,12 @@ class SelfLearningService {
       final w     = weights[sport];
       if (w == null) continue;
 
-      final correct = log.outcome == PredictionOutcome.correct;
-      final reward  = correct ? 1.0 : -1.0;
+      final correct    = log.outcome == PredictionOutcome.correct;
+      // 信心加權：高信心預測錯誤懲罰更重；高信心正確更強化
+      final confidence = ((log.details['confidence'] as num?)?.toDouble() ?? 0.6).clamp(0.4, 1.0);
+      final reward     = correct ? confidence : -confidence;
+      // 動態學習率：樣本越多越收斂
+      final lr = _dynamicLR(decided.length);
 
       final edge   = (log.details['edge']               as num?)?.toDouble() ?? 0.0;
       final nOdds  = (log.details['normalizedOdds']     as num?)?.toDouble() ?? 0.0;
@@ -240,7 +257,7 @@ class SelfLearningService {
       // Perceptron 更新：訊號與 edge 同向 → 加強；反向 → 削弱
       void update(String key, double sig) {
         final aligned = (sig >= 0 ? 1.0 : -1.0) == edgeSign ? 1.0 : -1.0;
-        w[key] = (w[key]! + _learningRate * reward * aligned * sig.abs())
+        w[key] = (w[key]! + lr * reward * aligned * sig.abs())
             .clamp(0.05, 0.70);
       }
 
