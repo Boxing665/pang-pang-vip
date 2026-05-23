@@ -1410,32 +1410,22 @@ class _MatchTile extends StatelessWidget {
                 ),
               ),
             ],
-            if (match.sport == SportType.baseball) ...[
-              const SizedBox(height: 6),
-              Center(
-                child: Text(
-                  '點擊卡片查看先發名單 & 傷兵 →',
-                  style: TextStyle(
-                      color: AppTheme.primaryAccent.withValues(alpha: 0.6),
-                      fontSize: 10),
-                ),
-              ),
+            // ── 統一推薦比分（足球/棒球/籃球均適用）────────────────
+            if (prediction != null && !isCompleted) ...[
+              const SizedBox(height: 8),
+              _MatchTile._predictScoreBadge(match: match, prediction: prediction!),
             ],
-            if (match.sport == SportType.football) ...[
-              if (prediction != null && !isCompleted) ...[
-                const SizedBox(height: 8),
-                _MatchTile._footballScoreBadge(match: match, prediction: prediction!),
-              ],
-              const SizedBox(height: 6),
-              Center(
-                child: Text(
-                  '點擊卡片查看實況 / 先發 / 傷兵 / 數據 →',
-                  style: TextStyle(
-                      color: AppTheme.primaryAccent.withValues(alpha: 0.6),
-                      fontSize: 10),
-                ),
+            const SizedBox(height: 6),
+            Center(
+              child: Text(
+                match.sport == SportType.baseball
+                    ? '點擊卡片查看先發名單 & 傷兵 →'
+                    : '點擊卡片查看實況 / 先發 / 傷兵 / 數據 →',
+                style: TextStyle(
+                    color: AppTheme.primaryAccent.withValues(alpha: 0.6),
+                    fontSize: 10),
               ),
-            ],
+            ),
             if (match.analystNote.isNotEmpty) ...[
               const SizedBox(height: 10),
               Text(
@@ -1452,15 +1442,23 @@ class _MatchTile extends StatelessWidget {
     );
   }
 
-  static Widget _footballScoreBadge({required MatchFixture match, required MatchPrediction prediction}) {
-    // Priority: 1. bookmaker-implied 2. Poisson matrix mode 3. AI ensemble
+  /// 統一推薦比分標籤 — 程式碼寫一次，足球 / 棒球 / 籃球通用
+  /// 足球優先順序：莊家盤口 > Poisson矩陣眾數 > AI融合預測
+  /// 棒球 / 籃球：直接使用 AI 融合預測
+  static Widget _predictScoreBadge({
+    required MatchFixture match,
+    required MatchPrediction prediction,
+  }) {
+    // ── 1. 決定顯示比分 ──────────────────────────────────────────
     final int home;
     final int away;
-    if (prediction.marketHomeExp > 0 && prediction.marketAwayExp > 0 &&
+    if (match.sport == SportType.football &&
+        prediction.marketHomeExp > 0 && prediction.marketAwayExp > 0 &&
         match.odds.bookmakerName != '模型推算') {
       home = prediction.marketHomeExp.round();
       away = prediction.marketAwayExp.round();
-    } else if (prediction.poissonModeHomeScore != null && prediction.poissonModeAwayScore != null) {
+    } else if (match.sport == SportType.football &&
+        prediction.poissonModeHomeScore != null) {
       home = prediction.poissonModeHomeScore!;
       away = prediction.poissonModeAwayScore!;
     } else {
@@ -1468,25 +1466,33 @@ class _MatchTile extends StatelessWidget {
       away = prediction.predictedAwayScore;
     }
 
-    // Winner label: match _winnerLabel logic from match_card.dart
+    // ── 2. 勝負結果標籤 ──────────────────────────────────────────
     final odds = match.odds;
+    final homeP = odds.fairHomeProb > 0.05 ? odds.fairHomeProb : prediction.ensembleHomeWinPct;
+    final awayP = odds.fairAwayProb > 0.05 ? odds.fairAwayProb : prediction.ensembleAwayWinPct;
+    final drawP = match.sport == SportType.football
+        ? (odds.fairDrawProb > 0.05 ? odds.fairDrawProb : prediction.ensembleDrawPct)
+        : 0.0;
+
     final String result;
-    if (odds.draw > 0 && odds.draw < 99 &&
+    if (match.sport == SportType.football &&
+        odds.draw > 0 && odds.draw < 99 &&
         odds.draw <= odds.homeWin && odds.draw <= odds.awayWin) {
-      final drawPct = (odds.fairDrawProb * 100).round().clamp(20, 65);
-      result = '平局 $drawPct%';
+      result = '平局 ${(odds.fairDrawProb * 100).round().clamp(20, 65)}%';
+    } else if (drawP > homeP && drawP > awayP) {
+      result = '平局 ${(drawP * 100).round().clamp(20, 65)}%';
+    } else if (homeP >= awayP) {
+      result = '主勝 ${(homeP * 100).round().clamp(40, 99)}%';
     } else {
-      final homeP = odds.fairHomeProb > 0.05 ? odds.fairHomeProb : prediction.ensembleHomeWinPct;
-      final drawP = odds.fairDrawProb > 0.05 ? odds.fairDrawProb : prediction.ensembleDrawPct;
-      final awayP = odds.fairAwayProb > 0.05 ? odds.fairAwayProb : prediction.ensembleAwayWinPct;
-      if (drawP > homeP && drawP > awayP) {
-        result = '平局 ${(drawP * 100).round().clamp(20, 65)}%';
-      } else if (homeP >= awayP) {
-        result = '主勝 ${(homeP * 100).round().clamp(40, 99)}%';
-      } else {
-        result = '客勝 ${(awayP * 100).round().clamp(40, 99)}%';
-      }
+      result = '客勝 ${(awayP * 100).round().clamp(40, 99)}%';
     }
+
+    // ── 3. 運動圖示 ──────────────────────────────────────────────
+    final icon = switch (match.sport) {
+      SportType.football   => '⚽',
+      SportType.baseball   => '⚾',
+      SportType.basketball => '🏀',
+    };
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -1498,7 +1504,7 @@ class _MatchTile extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Text('⚽ 推薦比分 ', style: TextStyle(fontSize: 11, color: Colors.white70)),
+          Text('$icon 推薦比分 ', style: const TextStyle(fontSize: 11, color: Colors.white70)),
           Text(
             '$home : $away',
             style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
