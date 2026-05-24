@@ -611,16 +611,35 @@ class PredictionEngine {
 
     } else if (sport == SportType.basketball) {
       // 🏀 籃球建模：球員場均得分與狀態
-      // 確保比分符合常規時間 (Regulation Time)，不計入延長賽
-      if (homeLambda < 85) homeLambda = 110.0;
-      if (awayLambda < 85) awayLambda = 108.0;
-      // 確保比分符合常規時間 (Regulation Time)，不計入延長賽，並考慮球員效率值
-      final homePer = fixture.homeForm.playerEfficiencyRating; // 新增 PER
-      final awayPer = fixture.awayForm.playerEfficiencyRating; // 新增 PER
+      // ── 賭盤基線：優先用 overLine+讓分解出主客期望，無則用勝率比例分配基準總分 ──
+      // 舊做法：硬編碼 110/108 → 所有比賽基線相同 → 預測比分趨同
+      // 新做法：每場比賽的基線由賭盤直接決定 → 比分差異反映賭盤預測
+      final bool bktPremium = odds.isFromBookmaker && odds.bookmakerName != '模型推算';
+      final double bktBase = (bktPremium && odds.overLine > 100)
+          ? odds.overLine            // 真實大小分：NBA overLine 通常 200-240
+          : profile.baseTotalScore;  // 無大小分：用聯盟基準 226
+      final double bktRatio = (fairHome / (fairHome + fairAway)).clamp(0.28, 0.72);
+      final double bktMktHome;
+      final double bktMktAway;
+      if (bktPremium && odds.spread != 0.0 && odds.overLine > 100) {
+        // 讓分+大小分同時有：聯立方程直接解出主客期望得分
+        bktMktHome = ((bktBase + odds.spread) / 2).clamp(85.0, 150.0);
+        bktMktAway = (bktBase - bktMktHome).clamp(85.0, 150.0);
+      } else {
+        // 只有大小分或只有 1X2：用勝率比例分配總分
+        bktMktHome = (bktBase * bktRatio).clamp(85.0, 150.0);
+        bktMktAway = (bktBase * (1.0 - bktRatio)).clamp(85.0, 150.0);
+      }
+      if (homeLambda < 85) homeLambda = bktMktHome;  // 賭盤主隊期望 (原為硬碼 110)
+      if (awayLambda < 85) awayLambda = bktMktAway;  // 賭盤客隊期望 (原為硬碼 108)
 
-      // PER 補正：聯盟平均 PER 約 15.0。PER 越高，進攻 λ 越高。
-      homeLambda = (homeLambda * 0.7 + (110.0 + (homePer - 15.0) * 2.5) * 0.3).clamp(85.0, 145.0);
-      awayLambda = (awayLambda * 0.7 + (108.0 + (awayPer - 15.0) * 2.5) * 0.3).clamp(85.0, 145.0);
+      // 確保比分符合常規時間 (Regulation Time)，不計入延長賽，並考慮球員效率值
+      final homePer = fixture.homeForm.playerEfficiencyRating;
+      final awayPer = fixture.awayForm.playerEfficiencyRating;
+
+      // PER 補正：以賭盤基線取代舊硬碼值，確保不同比賽有不同的基準期望得分
+      homeLambda = (homeLambda * 0.7 + (bktMktHome + (homePer - 15.0) * 2.5) * 0.3).clamp(85.0, 145.0);
+      awayLambda = (awayLambda * 0.7 + (bktMktAway + (awayPer - 15.0) * 2.5) * 0.3).clamp(85.0, 145.0);
 
       // 若 PER 儲存的是 ORTG 值（>50），表示有進階效率數據，調整 lambda 分配
       if (homePer > 50) {
@@ -812,21 +831,31 @@ class PredictionEngine {
     // 有真實盤口時上限為市場主導；無盤口時 AI 主導
     final double marketWeight;
     final String adaptiveStrategy;
-    if (hasPremiumOdds) {
-      // 向 SelfLearningService 取得自適應策略（同步讀取快取值）
+    // 真實賭盤 + 大小分/讓分 → 市場主導（最可信訊號）
+    // 真實賭盤 + 僅 1X2（無大小分）→ AI 主導；1X2 已透過 fairHome/fairAway 進 Dixon-Coles，
+    //   再用 baseTotalScore×fairRatio 強力融合只是把所有比賽都拉向聯賽均值 → 比分趨同
+    // 無真實賭盤 + 有推算 overLine → 輕度融合
+    // 無賭盤無大小分 → 純 AI
+    if (hasPremiumOdds && (odds.overLine > 0 || hasSpreadAndLine)) {
+      // 真實賭盤 + 有大小分或讓分數據
       final adaptive = _cachedAdaptiveWeights[sport.name];
       final baseAiW = adaptive?.$1 ?? (sport == SportType.baseball ? 0.35
           : sport == SportType.basketball ? 0.30 : 0.38);
       adaptiveStrategy = adaptive?.$3 ?? 'strategy_b';
-      // hasSpreadAndLine 時往市場方向再推一些，最多讓市場到 88%
       final boostIfSpread = hasSpreadAndLine ? 0.10 : 0.0;
       marketWeight = ((1.0 - baseAiW) + boostIfSpread).clamp(0.50, 0.90);
+    } else if (hasPremiumOdds) {
+      // 真實賭盤只有 1X2（無大小分）：1X2 已進 Dixon-Coles，勝率比例已決定比分方向
+      // 維持低 marketWeight 避免用常數 baseTotalScore 拉平所有預測
+      final adaptive = _cachedAdaptiveWeights[sport.name];
+      adaptiveStrategy = adaptive?.$3 ?? 'strategy_b';
+      marketWeight = 0.18;
     } else if (odds.overLine <= 0) {
-      // overLine 為 0 → 無真實盤口，用 baseTotalScore 混合只會拉向常數，改為純 AI
+      // 無真實賭盤且無大小分 → 純 AI
       marketWeight = 0.0;
       adaptiveStrategy = 'strategy_c';
     } else {
-      // 有自行推算的 overLine（非零）但非真實博彩商 → 輕度混合
+      // 模型推算 overLine（非真實賭盤）→ 輕度融合
       marketWeight = sport == SportType.football ? 0.45
           : sport == SportType.basketball ? 0.40
           : 0.30;
@@ -931,6 +960,43 @@ class PredictionEngine {
         final newAway = (total - newHome).clamp(80, 155);
         predictedHomeScore = newHome;
         predictedAwayScore = newAway;
+      }
+
+      // ── 籃球「賭盤錨定」精準比分推算 ────────────────────────────────
+      // 當有真實賭盤大小分（overLine>100）時，直接從 overLine+讓分推出主客比分
+      // 確保總分與賭盤一致，MC 僅做最後 15% 微調
+      if (hasPremiumOdds && odds.overLine > 100) {
+        // 1. 目標總得分（依大小分賠率方向微調 ±2.5）
+        final double bkTgt;
+        if (odds.overOdds > 1.0 && odds.underOdds > 1.0 && odds.overOdds != odds.underOdds) {
+          bkTgt = odds.overOdds < odds.underOdds
+              ? odds.overLine + 2.5   // 市場推大：目標略超盤口
+              : odds.overLine - 2.5;  // 市場推小：目標略低盤口
+        } else {
+          bkTgt = odds.overLine;
+        }
+        // 2. 目標分差：有讓分取賭盤值；無讓分用勝率差估算（每 20% 勝率差≈8分）
+        final double bkMargin;
+        if (odds.spread != 0.0) {
+          bkMargin = odds.spread; // 正值＝主場讓分＝主場領先幾分
+        } else {
+          bkMargin = ((fairHome - fairAway) * 40.0).clamp(-25.0, 25.0);
+        }
+        // 3. 解出主客得分
+        int bkHome = ((bkTgt + bkMargin) / 2).round().clamp(80, 155);
+        int bkAway = (bkTgt - bkHome).round().clamp(80, 155);
+        // 4. 修正方向錯誤
+        final int bkTotal = bkTgt.round();
+        if (fairHome > fairAway + 0.08 && bkHome <= bkAway) {
+          bkHome = bkAway + 1;
+          bkAway = (bkTotal - bkHome).clamp(80, 155);
+        } else if (fairAway > fairHome + 0.08 && bkAway <= bkHome) {
+          bkAway = bkHome + 1;
+          bkHome = (bkTotal - bkAway).clamp(80, 155);
+        }
+        // 5. 85% 賭盤錨定 + 15% MC 微調
+        predictedHomeScore = ((bkHome * 0.85 + predictedHomeScore * 0.15).round()).clamp(80, 155);
+        predictedAwayScore = ((bkAway * 0.85 + predictedAwayScore * 0.15).round()).clamp(80, 155);
       }
     }
 
@@ -1073,8 +1139,9 @@ class PredictionEngine {
       if (odds.spread != 0.0) {
         targetMargin = -odds.spread; // 正值 = 主場領先球數
       } else {
-        // 無讓分盤：用勝率差估計，係數 2.0 避免高估分差（足球勝 1:0 比 2:1 更常見）
-        targetMargin = ((fairHome - fairAway) * 2.0).clamp(-1.5, 1.5);
+        // 無讓分盤：用勝率差直接推算期望分差
+        // 係數 4.5：每 22% 勝率差≈1球差（heavy fav→2:0，moderate→2:1，slight→1:0，even→1:1）
+        targetMargin = ((fairHome - fairAway) * 4.5).clamp(-2.5, 2.5);
       }
 
       // 3. 解方程：rawHome = (total + margin) / 2
@@ -1130,8 +1197,8 @@ class PredictionEngine {
       if (odds.spread != 0.0 && odds.spread.abs() != 1.5) {
         targetMargin = -odds.spread; // 非標準讓分：直接錨定
       } else {
-        // 標準讓分或無讓分：用勝率差估算（讓每場比賽有獨特的預測分差）
-        targetMargin = ((fairHome - fairAway) * 8.0).clamp(-6.0, 6.0);
+        // 標準讓分或無讓分：用勝率差估算（每 10% 勝率差≈1.2分差，強化各場差異）
+        targetMargin = ((fairHome - fairAway) * 12.0).clamp(-7.0, 7.0);
       }
 
       // 3. 解方程：rawHome = (total + margin) / 2
