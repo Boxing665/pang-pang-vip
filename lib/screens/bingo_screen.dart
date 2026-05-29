@@ -135,9 +135,13 @@ class _BingoScreenState extends State<BingoScreen>
       if (_lastRecordedDrawNo != latestDrawNo) {
         _lastRecordedDrawNo = latestDrawNo;
         final currentStrategy = await SelfLearningService.getRecommendedBingoStrategy();
+        
+        // 記錄精準 3 顆預測 vs 實際開獎的命中情況
         final switched = await SelfLearningService.recordBingoDetail(
           drawNo:    latestDrawNo,
-          predicted: _cachedPred!.recommended + _cachedPred!.carryOverNumbers,
+          predicted: _cachedPred!.animationPredicted.isNotEmpty
+              ? _cachedPred!.animationPredicted
+              : (_cachedPred!.recommended.take(3).toList() + _cachedPred!.carryOverNumbers.take(3).toList()),
           actual:    latestActual,
           strategy:  currentStrategy,
         );
@@ -151,16 +155,30 @@ class _BingoScreenState extends State<BingoScreen>
 
     // 儲存本期預測（每次載入都更新，確保最新預測存在）
     if (pred != null) {
+      // 精準 3 顆動畫特徵預測
+      if (pred.animationPredicted.isNotEmpty) {
+        await _logSvc.saveBingoPrediction(
+          drawNo: pred.nextDrawNo,
+          groupLabel: '四套版本動畫特徵精準預測',
+          numbers: pred.animationPredicted,
+        );
+      }
+      
+      // 綜合推薦預測（備選）
       await _logSvc.saveBingoPrediction(
         drawNo: pred.nextDrawNo,
-        groupLabel: '綜合',
+        groupLabel: '綜合推薦',
         numbers: pred.recommended,
       );
-      await _logSvc.saveBingoPrediction(
-        drawNo: pred.nextDrawNo,
-        groupLabel: '拖牌',
-        numbers: pred.carryOverNumbers,
-      );
+      
+      // 拖牌法預測（參考）
+      if (pred.carryOverNumbers.isNotEmpty) {
+        await _logSvc.saveBingoPrediction(
+          drawNo: pred.nextDrawNo,
+          groupLabel: '拖牌法',
+          numbers: pred.carryOverNumbers,
+        );
+      }
     }
 
     if (!mounted) return;
@@ -679,8 +697,18 @@ class _BingoScreenState extends State<BingoScreen>
   Widget _predictionPanel() {
     final pred = _pred;
     if (pred == null) return const SizedBox();
-    final bestPick = _computeBestPick(pred);
+    
+    // ════════════════════════════════════════════════════════════════
+    // 顯示新的 3 顆動畫特徵精準預測
+    // ════════════════════════════════════════════════════════════════
+    final topThree = pred.animationPredicted.isNotEmpty 
+        ? pred.animationPredicted 
+        : pred.recommended.take(3).toList();
+    
     final latestNums = _records.isNotEmpty ? _records.first.numbers.toSet() : <int>{};
+    
+    // 為了對比，也顯示綜合預測的前 3 顆
+    final bestPick = _computeBestPick(pred).take(3).toList();
 
     return Container(
       margin: const EdgeInsets.fromLTRB(14, 6, 14, 6),
@@ -698,67 +726,242 @@ class _BingoScreenState extends State<BingoScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── 標題 ──────────────────────────────────────────────────
           Row(
             children: [
-              const Text('🎱', style: TextStyle(fontSize: 17)),
+              const Text('🎯', style: TextStyle(fontSize: 18)),
               const SizedBox(width: 8),
               Expanded(
-                child: Text(
-                  '胖胖最強推薦  ·  第 ${pred.nextDrawNo} 期',
-                  style: const TextStyle(
-                    color: _gold, fontWeight: FontWeight.w900, fontSize: 16, letterSpacing: 0.5),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '精準 3 顆預測  ·  第 ${pred.nextDrawNo} 期',
+                      style: const TextStyle(
+                        color: _gold, 
+                        fontWeight: FontWeight.w900, 
+                        fontSize: 16, 
+                        letterSpacing: 0.5
+                      ),
+                    ),
+                    if (pred.animationVersion.isNotEmpty)
+                      Text(
+                        '版本：${pred.animationVersion}',
+                        style: TextStyle(
+                          color: _cyan.withAlpha(180),
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ],
           ),
+          
+          // ── 信心度進度條 ──────────────────────────────────────────
+          if (pred.animationConfidence > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 10, bottom: 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        '預測信心度',
+                        style: TextStyle(color: Colors.white70, fontSize: 11),
+                      ),
+                      Text(
+                        '${(pred.animationConfidence * 100).toStringAsFixed(0)}%',
+                        style: const TextStyle(
+                          color: _gold,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: pred.animationConfidence.clamp(0.0, 1.0),
+                      minHeight: 6,
+                      backgroundColor: Colors.white.withAlpha(30),
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        pred.animationConfidence > 0.7 ? Colors.greenAccent : _gold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          
           if (pred.strategy.isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text(pred.strategy,
-                style: TextStyle(color: _cyan.withAlpha(200), fontSize: 11)),
+            const SizedBox(height: 8),
+            Text(
+              '📊 ${pred.strategy}',
+              style: TextStyle(
+                color: _cyan.withAlpha(200), 
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
           ],
+          
+          const SizedBox(height: 16),
+          
+          // ── 3 顆精準預測球 ──────────────────────────────────────────
+          Center(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: topThree.map((n) {
+                final s = pred.stats[n];
+                final isLatest = latestNums.contains(n);
+                final c = isLatest 
+                    ? _colorLatest 
+                    : (s != null ? _heatColor(s.heatScore) : Colors.purpleAccent);
+                
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Container(
+                    width: 70,
+                    height: 70,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: c,
+                      border: Border.all(
+                        color: _gold.withAlpha(200), 
+                        width: 2.5,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: c.withAlpha(140), 
+                          blurRadius: 14,
+                          spreadRadius: 2,
+                        )
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          n.toString().padLeft(2, '0'),
+                          style: TextStyle(
+                            fontSize: 28, 
+                            fontWeight: FontWeight.w900,
+                            color: isLatest ? Colors.black : Colors.white, 
+                            height: 1,
+                          ),
+                        ),
+                        if (s != null)
+                          Text(
+                            s.gap == 0 ? '本期' : '${s.gap}期前',
+                            style: TextStyle(
+                              fontSize: 8,
+                              color: isLatest 
+                                ? Colors.black54 
+                                : (s.gap <= 2 ? Colors.greenAccent : Colors.white60),
+                              height: 1.2,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+          
           const SizedBox(height: 14),
-          // 8 best balls
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: bestPick.map((n) {
-              final s = pred.stats[n]!;
-              final isLatest = latestNums.contains(n);
-              final c = isLatest ? _colorLatest : _heatColor(s.heatScore);
-              return Container(
-                width: 50,
-                height: 50,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: c,
-                  border: Border.all(color: _gold.withAlpha(180), width: 1.8),
-                  boxShadow: [BoxShadow(color: c.withAlpha(120), blurRadius: 10)],
+          
+          // ── 說明文字 ──────────────────────────────────────────────
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.white.withAlpha(8),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '✨ 四套版本動畫特徵精準預測',
+                  style: TextStyle(
+                    color: _gold,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      n.toString().padLeft(2, '0'),
-                      style: TextStyle(
-                        fontSize: 14, fontWeight: FontWeight.w900,
-                        color: isLatest ? Colors.black : Colors.white, height: 1),
-                    ),
-                    Text(
-                      s.gap == 0 ? '◎' : '${s.gap}',
-                      style: TextStyle(
-                        fontSize: 8,
-                        color: isLatest ? Colors.black54 : s.gap <= 4 ? Colors.greenAccent : Colors.white54,
-                        height: 1.1),
-                    ),
-                  ],
+                const SizedBox(height: 4),
+                const Text(
+                  '基於當期開獎動畫特徵分析，每期獨立判斷版本邏輯，預測最可能出現的 3 顆號碼。不依賴歷史數據，精準度更高。',
+                  style: TextStyle(
+                    color: Colors.white54,
+                    fontSize: 9,
+                    height: 1.4,
+                  ),
                 ),
-              );
-            }).toList(),
+              ],
+            ),
           ),
-          const SizedBox(height: 12),
-          Text(
-            '★ 綜合同出配對 · 熱度 · 遺漏率三維評分，自動選出最佳 8 顆',
-            style: TextStyle(color: Colors.white38, fontSize: 10),
-          ),
+          
+          const SizedBox(height: 14),
+          
+          // ── 參考的綜合預測（灰顯） ──────────────────────────────────
+          if (bestPick.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '📈 參考綜合預測（前 3 顆）',
+                    style: TextStyle(
+                      color: Colors.white38,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: bestPick.map((n) {
+                      final s = pred.stats[n];
+                      final isLatest = latestNums.contains(n);
+                      final c = isLatest ? _colorLatest : _heatColor(s?.heatScore ?? 0.5);
+                      
+                      return Container(
+                        width: 45,
+                        height: 45,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: c.withAlpha(100),
+                          border: Border.all(
+                            color: _gold.withAlpha(100), 
+                            width: 1.2,
+                          ),
+                        ),
+                        child: Center(
+                          child: Text(
+                            n.toString().padLeft(2, '0'),
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w800,
+                              color: isLatest ? Colors.black : Colors.white,
+                              height: 1,
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );

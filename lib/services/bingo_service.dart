@@ -3,7 +3,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'bingo_version_pattern_analyzer.dart';
+import 'bingo_animation_pattern_predictor.dart';
 
 // ════════════════════════════════════════════════════════════════
 //  資料模型
@@ -152,6 +152,11 @@ class BingoPrediction {
   final List<ComboPatternStat> topFourCombos;
   final List<BalancePatternStat> bigSmallPatterns;
   final List<BalancePatternStat> oddEvenPatterns;
+  
+  // ── 新增：動畫特徵預測（精準3顆） ────────────────────────────
+  final List<int> animationPredicted;     // 基於當期開獎動畫特徵預測的3顆號碼
+  final String animationVersion;          // 識別的動畫版本
+  final double animationConfidence;       // 預測信心度 0.0-1.0
 
   const BingoPrediction({
     required this.stats,
@@ -169,6 +174,9 @@ class BingoPrediction {
     this.topFourCombos = const [],
     this.bigSmallPatterns = const [],
     this.oddEvenPatterns = const [],
+    this.animationPredicted = const [],
+    this.animationVersion = '',
+    this.animationConfidence = 0.0,
   });
 }
 
@@ -647,56 +655,44 @@ class BingoService {
       }
     }
 
-    // ── 選出綜合得分最高的 6 顆（加入區間多樣性：每個十位區間最多 2 顆）──
-    // ── 新增：版本模式识别预测（不依赖历史连贯，基于当期参数）────────
-    // 只使用最新一期的数据来识别版本和预测下期
-    final latestNumbers = workRecords.isNotEmpty ? workRecords.first.numbers : <int>[];
-    final identifiedVersion = BingoVersionPatternAnalyzer.identifyVersion(latestNumbers);
-    final versionBasedPrediction = latestNumbers.isNotEmpty
-        ? BingoVersionPatternAnalyzer.analyzeCurrentPeriodPattern(latestNumbers)
-        : <int>[];
-
-    // 賓果 1-80 分 8 個十位區間；限制每區最多 2 顆，確保覆蓋不同區段
-    final finalSorted = predictScores.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
+    // ════════════════════════════════════════════════════════════════
+    // 基於當期動畫特徵的精準 3 顆預測
+    // 每期都是新開始，不依賴歷史，只看當期動畫特徵
+    // ════════════════════════════════════════════════════════════════
     
-    // 优先使用版本模式预测，如果不可用则降级到历史预测
-    final recommended = versionBasedPrediction.isNotEmpty
-        ? versionBasedPrediction
-        : (() {
-            final rec = <int>[];
-            final recZoneUsed = <int, int>{};
-            for (final e in finalSorted) {
-              if (rec.length >= 6) break;
-              final z = (e.key - 1) ~/ 10;
-              final used = recZoneUsed[z] ?? 0;
-              if (used < 2) {
-                rec.add(e.key);
-                recZoneUsed[z] = used + 1;
-              }
-            }
-            for (final e in finalSorted) {
-              if (rec.length >= 6) break;
-              if (!rec.contains(e.key)) rec.add(e.key);
-            }
-            rec.sort();
-            return rec;
-          }());
-
-    // ── 策略描述 ───────────────────────────────────────────────────
-    final hasDueCombo = [...twoCombos, ...threeCombos, ...fourCombos]
-        .any((c) => c.suggestAfter == 0);
-    final String strategy;
-    if (versionBasedPrediction.isNotEmpty) {
-      strategy = '版本模式识别预测 ($identifiedVersion，当期参数反向补偿)';
-    } else if (maxLag >= 3 && hasDueCombo) {
-      strategy = '拖牌法 + 同出到期複合預測（$N 局歷史）';
-    } else if (maxLag >= 3) {
-      strategy = '拖牌法預測（$N 局歷史，lag 1~$maxLag）';
-    } else if (hasDueCombo) {
-      strategy = '二/三/四同出到期預測';
+    final latestNumbers = workRecords.isNotEmpty ? workRecords.first.numbers : <int>[];
+    List<int> recommended = [];
+    String strategy = '';
+    String animationVersion = '';
+    double animationConfidence = 0.0;
+    
+    if (latestNumbers.isNotEmpty) {
+      // 1. 識別當期的四套版本邏輯
+      animationVersion = BingoAnimationPatternPredictor.identifyVersion(latestNumbers);
+      
+      // 2. 根據當期特徵預測下期的 3 顆高精準號碼
+      recommended = BingoAnimationPatternPredictor.predictTopThreeNumbers(
+        latestNumbers,
+        versionKey: animationVersion,
+      );
+      
+      // 3. 計算預測信心度
+      final analysis = BingoAnimationPatternPredictor.analyzeCurrentDrawCharacteristics(latestNumbers);
+      final concentration = (analysis['concentration'] as double? ?? 0.0).clamp(0.0, 1.0);
+      animationConfidence = (0.3 + concentration * 0.7).clamp(0.4, 0.95);
+      
+      // 4. 生成策略描述
+      strategy = '四套版本動畫特徵精準預測 (版本: $animationVersion, 信心度: ${(animationConfidence * 100).toStringAsFixed(0)}%)';
     } else {
-      strategy = '遺漏間隔到期預測';
+      // 降級：無當期數據時使用歷史方法
+      final finalSorted = predictScores.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+      
+      // 選出得分最高的 3 顆
+      recommended = finalSorted.take(3).map((e) => e.key).toList()..sort();
+      strategy = '歷史評分預測 (3 顆號碼)';
+      animationVersion = 'fallback';
+      animationConfidence = 0.5;
     }
 
     return BingoPrediction(
@@ -715,6 +711,9 @@ class BingoService {
       topFourCombos: fourCombos,
       bigSmallPatterns: bigSmall,
       oddEvenPatterns: oddEven,
+      animationPredicted: recommended,
+      animationVersion: animationVersion,
+      animationConfidence: animationConfidence,
     );
   }
 
