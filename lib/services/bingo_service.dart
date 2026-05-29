@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'bingo_version_pattern_analyzer.dart';
 
 // ════════════════════════════════════════════════════════════════
 //  資料模型
@@ -647,32 +648,48 @@ class BingoService {
     }
 
     // ── 選出綜合得分最高的 6 顆（加入區間多樣性：每個十位區間最多 2 顆）──
+    // ── 新增：版本模式识别预测（不依赖历史连贯，基于当期参数）────────
+    // 只使用最新一期的数据来识别版本和预测下期
+    final latestNumbers = workRecords.isNotEmpty ? workRecords.first.numbers : <int>[];
+    final identifiedVersion = BingoVersionPatternAnalyzer.identifyVersion(latestNumbers);
+    final versionBasedPrediction = latestNumbers.isNotEmpty
+        ? BingoVersionPatternAnalyzer.analyzeCurrentPeriodPattern(latestNumbers)
+        : <int>[];
+
     // 賓果 1-80 分 8 個十位區間；限制每區最多 2 顆，確保覆蓋不同區段
     final finalSorted = predictScores.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
-    final recommended = <int>[];
-    final recZoneUsed = <int, int>{};
-    for (final e in finalSorted) {
-      if (recommended.length >= 6) break;
-      final z = (e.key - 1) ~/ 10;
-      final used = recZoneUsed[z] ?? 0;
-      if (used < 2) {
-        recommended.add(e.key);
-        recZoneUsed[z] = used + 1;
-      }
-    }
-    // 若受區間限制不足 6 顆，補滿（放鬆限制）
-    for (final e in finalSorted) {
-      if (recommended.length >= 6) break;
-      if (!recommended.contains(e.key)) recommended.add(e.key);
-    }
-    recommended.sort();
+    
+    // 优先使用版本模式预测，如果不可用则降级到历史预测
+    final recommended = versionBasedPrediction.isNotEmpty
+        ? versionBasedPrediction
+        : (() {
+            final rec = <int>[];
+            final recZoneUsed = <int, int>{};
+            for (final e in finalSorted) {
+              if (rec.length >= 6) break;
+              final z = (e.key - 1) ~/ 10;
+              final used = recZoneUsed[z] ?? 0;
+              if (used < 2) {
+                rec.add(e.key);
+                recZoneUsed[z] = used + 1;
+              }
+            }
+            for (final e in finalSorted) {
+              if (rec.length >= 6) break;
+              if (!rec.contains(e.key)) rec.add(e.key);
+            }
+            rec.sort();
+            return rec;
+          }());
 
     // ── 策略描述 ───────────────────────────────────────────────────
     final hasDueCombo = [...twoCombos, ...threeCombos, ...fourCombos]
         .any((c) => c.suggestAfter == 0);
     final String strategy;
-    if (maxLag >= 3 && hasDueCombo) {
+    if (versionBasedPrediction.isNotEmpty) {
+      strategy = '版本模式识别预测 ($identifiedVersion，当期参数反向补偿)';
+    } else if (maxLag >= 3 && hasDueCombo) {
       strategy = '拖牌法 + 同出到期複合預測（$N 局歷史）';
     } else if (maxLag >= 3) {
       strategy = '拖牌法預測（$N 局歷史，lag 1~$maxLag）';
